@@ -9,7 +9,7 @@ set -euo pipefail
 # are auto-converted to runArgs -p.
 # ==============================================================================
 
-REMOTE_HOME="/home/vscode"
+DOTFILES_DIR="/opt/devc-dotfiles"
 
 ADDITIONAL_FEATURES='{
   "ghcr.io/duduribeiro/devcontainer-features/neovim:1": { "version": "nightly" },
@@ -19,10 +19,10 @@ ADDITIONAL_FEATURES='{
 }'
 
 HOST_MOUNTS=(
-  "${HOME}/.config/nvim:${REMOTE_HOME}/.config/nvim"
-  "${HOME}/.claude:${REMOTE_HOME}/.claude"
-  "${HOME}/.claude.json:${REMOTE_HOME}/.claude.json"
-  "${HOME}/.ssh:${REMOTE_HOME}/.ssh"
+  "${HOME}/.config/nvim:${DOTFILES_DIR}/config-nvim"
+  "${HOME}/.claude:${DOTFILES_DIR}/claude"
+  "${HOME}/.claude.json:${DOTFILES_DIR}/claude.json"
+  "${HOME}/.ssh:${DOTFILES_DIR}/ssh"
   "/tmp/devc-credentials:/tmp/devc-credentials:ro"
   # Obsidian vault - MCP config references this absolute path
   "${HOME}/work:${HOME}/work"
@@ -178,9 +178,20 @@ REMOTE_USER=$(echo "$UP_OUTPUT" | jq -r '.remoteUser // "vscode"')
 REMOTE_WORKSPACE=$(echo "$UP_OUTPUT" | jq -r '.remoteWorkspaceFolder // "/workspaces/'"${PROJECT_NAME}"'"')
 echo "==> Entering container ${CONTAINER_ID:0:12} as ${REMOTE_USER}..."
 
-# --- Configure git/gh credentials inside container ----------------------------
+# --- Resolve remote home & symlink dotfiles -----------------------------------
 
 _exec() { docker exec -u "$REMOTE_USER" "$CONTAINER_ID" "$@"; }
+
+REMOTE_HOME=$(_exec sh -c 'echo $HOME')
+echo "==> Remote home: ${REMOTE_HOME}"
+
+_exec mkdir -p "${REMOTE_HOME}/.config"
+_exec ln -sfn "${DOTFILES_DIR}/config-nvim" "${REMOTE_HOME}/.config/nvim"
+_exec ln -sfn "${DOTFILES_DIR}/claude"       "${REMOTE_HOME}/.claude"
+_exec ln -sfn "${DOTFILES_DIR}/claude.json"  "${REMOTE_HOME}/.claude.json"
+_exec ln -sfn "${DOTFILES_DIR}/ssh"          "${REMOTE_HOME}/.ssh"
+
+# --- Configure git/gh credentials inside container ----------------------------
 
 if [[ -f /tmp/devc-credentials/git-user-name ]]; then
   _exec git config --global user.name "$(cat /tmp/devc-credentials/git-user-name)" 2>/dev/null || true
