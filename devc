@@ -23,7 +23,7 @@ HOST_MOUNTS=(
   "${HOME}/.claude:${DOTFILES_DIR}/claude"
   "${HOME}/.claude.json:${DOTFILES_DIR}/claude.json"
   "${HOME}/.ssh:${DOTFILES_DIR}/ssh"
-  "/tmp/devc-credentials:/tmp/devc-credentials:ro"
+  "/tmp/devc-credentials:/tmp/devc-credentials"
   # Obsidian vault - MCP config references this absolute path
   "${HOME}/work:${HOME}/work"
 )
@@ -152,7 +152,8 @@ fi
 MOUNT_ARGS=()
 for m in "${HOST_MOUNTS[@]}"; do
   src="${m%%:*}"
-  tgt="${m#*:}"
+  rest="${m#*:}"
+  tgt="${rest%%:*}"
   [[ -e "$src" ]] && MOUNT_ARGS+=(--mount "type=bind,source=${src},target=${tgt}")
 done
 
