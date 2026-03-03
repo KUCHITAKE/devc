@@ -184,7 +184,7 @@ func resolvePort(port string) string {
 	for i := 0; i < 100; i++ {
 		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", hostPort))
 		if err == nil {
-			ln.Close()
+			_ = ln.Close()
 			if hostPort != containerPort {
 				log.Warn("Port in use, remapped", "container", containerPort, "host", hostPort)
 			}

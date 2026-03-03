@@ -62,7 +62,9 @@ func runUp(dir string, opts upOptions) error {
 	}
 
 	// 2. Extract credentials
-	extractCredentials()
+	if err := extractCredentials(); err != nil {
+		return err
+	}
 
 	// 3. Ensure devcontainer.json exists
 	if err := ensureDevcontainerJSON(ws); err != nil {
@@ -87,7 +89,7 @@ func runUp(dir string, opts upOptions) error {
 		}
 	}
 	if configPath != "" {
-		defer os.Remove(configPath)
+		defer func() { _ = os.Remove(configPath) }()
 	}
 
 	// 6. Build mount args
@@ -148,7 +150,7 @@ func runUp(dir string, opts upOptions) error {
 
 	// 10. Clean up temp config before exec (defer won't run after syscall.Exec)
 	if configPath != "" {
-		os.Remove(configPath)
+		_ = os.Remove(configPath)
 	}
 
 	// Process replacement with docker exec
