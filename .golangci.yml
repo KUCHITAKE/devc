@@ -5,5 +5,5 @@ linters:
     - errcheck
     - ineffassign
     - unused
-    - gosimple
+    - staticcheck
     - govet
