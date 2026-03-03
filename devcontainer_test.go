@@ -1,0 +1,237 @@
+package main
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestCollectPorts(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawJSON  string
+		cliPorts []string
+		want     []string
+	}{
+		{
+			name:     "cli ports only",
+			rawJSON:  `{}`,
+			cliPorts: []string{"3000:3000"},
+			want:     []string{"3000:3000"},
+		},
+		{
+			name:     "forwardPorts as numbers",
+			rawJSON:  `{"forwardPorts": [3000, 5173]}`,
+			cliPorts: nil,
+			want:     []string{"3000", "5173"},
+		},
+		{
+			name:     "appPort as number",
+			rawJSON:  `{"appPort": 8080}`,
+			cliPorts: nil,
+			want:     []string{"8080"},
+		},
+		{
+			name:     "appPort as string",
+			rawJSON:  `{"appPort": "8080:8080"}`,
+			cliPorts: nil,
+			want:     []string{"8080:8080"},
+		},
+		{
+			name:     "appPort as array of numbers",
+			rawJSON:  `{"appPort": [3000, 5000]}`,
+			cliPorts: nil,
+			want:     []string{"3000", "5000"},
+		},
+		{
+			name:     "appPort as array of strings",
+			rawJSON:  `{"appPort": ["3000:3000", "5000:5000"]}`,
+			cliPorts: nil,
+			want:     []string{"3000:3000", "5000:5000"},
+		},
+		{
+			name:     "deduplication: cli overrides forwardPorts",
+			rawJSON:  `{"forwardPorts": [3000]}`,
+			cliPorts: []string{"3000"},
+			want:     []string{"3000"},
+		},
+		{
+			name:     "combined forwardPorts and appPort",
+			rawJSON:  `{"forwardPorts": [3000], "appPort": 8080}`,
+			cliPorts: nil,
+			want:     []string{"3000", "8080"},
+		},
+		{
+			name:     "empty config no ports",
+			rawJSON:  `{}`,
+			cliPorts: nil,
+			want:     []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(tt.rawJSON), &raw); err != nil {
+				t.Fatalf("invalid test JSON: %v", err)
+			}
+			got := collectPorts(raw, tt.cliPorts)
+			if len(got) == 0 && len(tt.want) == 0 {
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("collectPorts() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("collectPorts() = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestResolvePort(t *testing.T) {
+	tests := []struct {
+		name string
+		port string
+	}{
+		{"host:container passes through", "8080:3000"},
+		{"non-numeric passes through", "invalid"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolvePort(tt.port)
+			if got != tt.port {
+				t.Fatalf("resolvePort(%q) = %q, want %q", tt.port, got, tt.port)
+			}
+		})
+	}
+
+	// Test bare port resolution (binds to an available port)
+	t.Run("bare port resolves to host:container", func(t *testing.T) {
+		got := resolvePort("39876")
+		// Should be in host:container format
+		if got == "39876" {
+			t.Fatal("resolvePort(\"39876\") should resolve to host:container format")
+		}
+		if len(got) < 5 || got[len(got)-6:] != ":39876" {
+			t.Fatalf("resolvePort(\"39876\") = %q, expected to end with :39876", got)
+		}
+	})
+}
+
+func TestComposeFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	ws := workspace{dir: tmpDir, name: "test"}
+	dcDir := filepath.Join(tmpDir, ".devcontainer")
+	if err := os.MkdirAll(dcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		rawJSON string
+		want    []string
+	}{
+		{
+			name:    "no dockerComposeFile",
+			rawJSON: `{}`,
+			want:    nil,
+		},
+		{
+			name:    "single string",
+			rawJSON: `{"dockerComposeFile": "docker-compose.yml"}`,
+			want:    []string{filepath.Join(dcDir, "docker-compose.yml")},
+		},
+		{
+			name:    "array of strings",
+			rawJSON: `{"dockerComposeFile": ["docker-compose.yml", "docker-compose.override.yml"]}`,
+			want: []string{
+				filepath.Join(dcDir, "docker-compose.yml"),
+				filepath.Join(dcDir, "docker-compose.override.yml"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(tt.rawJSON), &raw); err != nil {
+				t.Fatalf("invalid test JSON: %v", err)
+			}
+			got := composeFiles(ws, raw)
+			if len(got) != len(tt.want) {
+				t.Fatalf("composeFiles() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("composeFiles() = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestParseUpOutput(t *testing.T) {
+	tests := []struct {
+		name    string
+		output  string
+		wantID  string
+		wantErr bool
+	}{
+		{
+			name:   "valid JSON on last line",
+			output: `{"containerId":"abc123","remoteUser":"vscode","remoteWorkspaceFolder":"/workspaces/test"}`,
+			wantID: "abc123",
+		},
+		{
+			name: "JSON after log lines",
+			output: `some log output
+more logs
+{"containerId":"def456","remoteUser":"root","remoteWorkspaceFolder":"/workspace"}`,
+			wantID: "def456",
+		},
+		{
+			name: "JSON with trailing whitespace",
+			output: `{"containerId":"ghi789","remoteUser":"dev","remoteWorkspaceFolder":"/home/dev/project"}
+`,
+			wantID: "ghi789",
+		},
+		{
+			name:    "no JSON output",
+			output:  "just some log text\nno json here",
+			wantErr: true,
+		},
+		{
+			name:    "empty output",
+			output:  "",
+			wantErr: true,
+		},
+		{
+			name:    "JSON without containerId",
+			output:  `{"status":"started"}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseUpOutput([]byte(tt.output))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.ContainerID != tt.wantID {
+				t.Fatalf("ContainerID = %q, want %q", result.ContainerID, tt.wantID)
+			}
+		})
+	}
+}
