@@ -169,9 +169,11 @@ func runLifecycleHooks(ctx context.Context, containerID, user string, hooks ...[
 			if lc.Name != "" {
 				label = lc.Name + ": " + label
 			}
-			printDetail("Running hook", label)
-			if err := containerExec(ctx, containerID, user, lc.Command); err != nil {
-				printWarn("Hook failed: "+label, err.Error())
+			printProgress("Running hook", label)
+			if err := containerExecTail(ctx, containerID, user, lc.Command); err != nil {
+				printWarn("Hook failed", label+": "+err.Error())
+			} else {
+				printDone("Hook completed", label)
 			}
 		}
 	}

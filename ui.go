@@ -2,15 +2,19 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/charmbracelet/huh/spinner"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-isatty"
+	"golang.org/x/term"
 )
 
 var isTTY = isatty.IsTerminal(os.Stderr.Fd()) || isatty.IsCygwinTerminal(os.Stderr.Fd())
@@ -105,6 +109,101 @@ func runWithSpinner(msg, detail string, fn func() error) error {
 		return err
 	}
 	return fnErr
+}
+
+// ansiRe matches ANSI escape sequences (CSI, OSC) and carriage returns.
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]|\r`)
+
+// stripANSI removes ANSI escape sequences from a string.
+func stripANSI(s string) string {
+	return ansiRe.ReplaceAllString(s, "")
+}
+
+// tailRenderer displays the last N lines of output in dim style,
+// updating in place using ANSI escape codes. It implements io.Writer.
+type tailRenderer struct {
+	mu        sync.Mutex
+	buf       []byte   // partial line buffer
+	lines     []string // last maxLines complete lines
+	maxLines  int
+	displayed int // lines currently rendered on terminal
+	width     int // terminal width for truncation
+}
+
+func newTailRenderer(maxLines int) *tailRenderer {
+	width := 80
+	if isTTY {
+		if w, _, err := term.GetSize(int(os.Stderr.Fd())); err == nil && w > 0 {
+			width = w
+		}
+	}
+	return &tailRenderer{maxLines: maxLines, width: width}
+}
+
+// Write implements io.Writer. It buffers input, extracts complete lines,
+// and updates the tail display.
+func (t *tailRenderer) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.buf = append(t.buf, p...)
+	for {
+		idx := bytes.IndexByte(t.buf, '\n')
+		if idx < 0 {
+			break
+		}
+		line := stripANSI(strings.TrimRight(string(t.buf[:idx]), "\r"))
+		t.buf = t.buf[idx+1:]
+		if line == "" {
+			continue
+		}
+		t.lines = append(t.lines, line)
+		if len(t.lines) > t.maxLines {
+			t.lines = t.lines[1:]
+		}
+	}
+
+	t.render()
+	return len(p), nil
+}
+
+// render redraws the tail lines on the terminal.
+// Must be called with t.mu held.
+func (t *tailRenderer) render() {
+	if !isTTY || len(t.lines) == 0 {
+		return
+	}
+
+	// Erase previously displayed lines (move up + clear, bottom to top)
+	for i := 0; i < t.displayed; i++ {
+		fmt.Fprint(os.Stderr, "\x1b[A\x1b[2K")
+	}
+
+	// Write current tail lines
+	t.displayed = len(t.lines)
+	const prefix = "  │ "
+	maxContent := t.width - len(prefix) - 1
+	for _, line := range t.lines {
+		if maxContent > 0 && len(line) > maxContent {
+			line = line[:maxContent-3] + "..."
+		}
+		fmt.Fprintf(os.Stderr, "\r%s\n", detailStyle.Render(prefix+line))
+	}
+}
+
+// Clear removes the tail display from the terminal.
+func (t *tailRenderer) Clear() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if !isTTY || t.displayed == 0 {
+		return
+	}
+
+	for i := 0; i < t.displayed; i++ {
+		fmt.Fprint(os.Stderr, "\x1b[A\x1b[2K")
+	}
+	t.displayed = 0
 }
 
 // dockerStreamMsg represents a Docker NDJSON stream message.

@@ -86,9 +86,13 @@ func runUp(dir string, opts upOptions) error {
 		return err
 	}
 
-	// 6. Compose-based devcontainers are not supported
+	// 6. Compose-based devcontainer → delegate to runUpCompose
 	if composeFiles(ws, cfg.Raw) != nil {
-		return fmt.Errorf("compose-based devcontainers not supported; install devcontainer CLI")
+		cc, err := parseComposeConfig(ws, cfg.Raw)
+		if err != nil {
+			return err
+		}
+		return runUpCompose(ctx, ws, cfg, cc, ucfg, opts)
 	}
 
 	// 7. Check existing container (running or stopped)

@@ -329,11 +329,14 @@ func createDirTar(contextDir, dockerfilePath, dcDir string) (io.Reader, error) {
 			return err
 		}
 
-		// Skip .git and node_modules directories
+		// Skip .git, node_modules, and .devcontainer subdirectories,
+		// but never skip the walk root itself (contextDir may be .devcontainer).
 		if d.IsDir() {
-			name := d.Name()
-			if name == ".git" || name == "node_modules" || name == ".devcontainer" {
-				return filepath.SkipDir
+			if path != contextDir {
+				name := d.Name()
+				if name == ".git" || name == "node_modules" || name == ".devcontainer" {
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}

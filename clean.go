@@ -38,9 +38,9 @@ func runClean(dir string) error {
 	ctx := context.Background()
 
 	if len(files) > 0 {
-		project := ws.name + "_devcontainer"
+		project := composeProject(ws)
 		printProgress("Removing containers", project)
-		if err := composeDown(ctx, project, true); err != nil {
+		if err := composeExec(ctx, files, project, "down", "-v", "--remove-orphans"); err != nil {
 			return fmt.Errorf("compose down -v failed: %w", err)
 		}
 	} else {

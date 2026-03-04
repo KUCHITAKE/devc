@@ -11,9 +11,6 @@ import (
 	"syscall"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"golang.org/x/term"
@@ -114,6 +111,57 @@ func containerExecOutput(ctx context.Context, containerID, user string, cmd []st
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// containerExecTail runs a command in a container, displaying the last 3 lines
+// of output in dim style below the current cursor position.
+// On error, the last 20 lines are included in the error message.
+func containerExecTail(ctx context.Context, containerID, user string, cmd []string) error {
+	cli, err := getDockerClient()
+	if err != nil {
+		return fmt.Errorf("docker client: %w", err)
+	}
+
+	execCfg := container.ExecOptions{
+		User:         user,
+		AttachStdout: true,
+		AttachStderr: true,
+		Cmd:          cmd,
+	}
+	resp, err := cli.ContainerExecCreate(ctx, containerID, execCfg)
+	if err != nil {
+		return fmt.Errorf("exec create: %w", err)
+	}
+
+	attach, err := cli.ContainerExecAttach(ctx, resp.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return fmt.Errorf("exec attach: %w", err)
+	}
+	defer attach.Close()
+
+	tail := newTailRenderer(3)
+	var combined strings.Builder
+	multi := io.MultiWriter(tail, &combined)
+
+	if _, err := stdcopy.StdCopy(multi, multi, attach.Reader); err != nil {
+		tail.Clear()
+		return fmt.Errorf("exec copy: %w", err)
+	}
+
+	tail.Clear()
+
+	inspect, err := cli.ContainerExecInspect(ctx, resp.ID)
+	if err != nil {
+		return fmt.Errorf("exec inspect: %w", err)
+	}
+	if inspect.ExitCode != 0 {
+		lines := strings.Split(strings.TrimSpace(combined.String()), "\n")
+		if len(lines) > 20 {
+			lines = lines[len(lines)-20:]
+		}
+		return fmt.Errorf("exec exited with code %d\n%s", inspect.ExitCode, strings.Join(lines, "\n"))
+	}
+	return nil
+}
+
 // containerExecInteractive runs a command in a container with a TTY attached to the current terminal.
 // It returns the exit code of the command.
 func containerExecInteractive(ctx context.Context, containerID, user, workdir string, cmd []string) (int, error) {
@@ -203,58 +251,3 @@ func containerExecInteractive(ctx context.Context, containerID, user, workdir st
 	return inspect.ExitCode, nil
 }
 
-// composeDown stops and removes containers, networks, and optionally volumes
-// for a Docker Compose project identified by its project label.
-func composeDown(ctx context.Context, project string, removeVolumes bool) error {
-	cli, err := getDockerClient()
-	if err != nil {
-		return fmt.Errorf("docker client: %w", err)
-	}
-
-	projectFilter := filters.NewArgs(filters.Arg("label", "com.docker.compose.project="+project))
-
-	// 1. Stop and remove containers
-	containers, err := cli.ContainerList(ctx, container.ListOptions{
-		All:     true,
-		Filters: projectFilter,
-	})
-	if err != nil {
-		return fmt.Errorf("list containers: %w", err)
-	}
-	for _, c := range containers {
-		_ = cli.ContainerStop(ctx, c.ID, container.StopOptions{})
-		if err := cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
-			return fmt.Errorf("remove container %s: %w", c.ID[:12], err)
-		}
-	}
-
-	// 2. Remove networks
-	networks, err := cli.NetworkList(ctx, network.ListOptions{
-		Filters: projectFilter,
-	})
-	if err != nil {
-		return fmt.Errorf("list networks: %w", err)
-	}
-	for _, n := range networks {
-		if err := cli.NetworkRemove(ctx, n.ID); err != nil {
-			return fmt.Errorf("remove network %s: %w", n.Name, err)
-		}
-	}
-
-	// 3. Remove volumes (if requested)
-	if removeVolumes {
-		vols, err := cli.VolumeList(ctx, volume.ListOptions{
-			Filters: projectFilter,
-		})
-		if err != nil {
-			return fmt.Errorf("list volumes: %w", err)
-		}
-		for _, v := range vols.Volumes {
-			if err := cli.VolumeRemove(ctx, v.Name, true); err != nil {
-				return fmt.Errorf("remove volume %s: %w", v.Name, err)
-			}
-		}
-	}
-
-	return nil
-}

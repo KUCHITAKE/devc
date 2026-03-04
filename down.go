@@ -38,9 +38,9 @@ func runDown(dir string) error {
 	ctx := context.Background()
 
 	if len(files) > 0 {
-		project := ws.name + "_devcontainer"
+		project := composeProject(ws)
 		printProgress("Stopping containers", project)
-		if err := composeDown(ctx, project, false); err != nil {
+		if err := composeExec(ctx, files, project, "down"); err != nil {
 			return fmt.Errorf("compose down failed: %w", err)
 		}
 	} else {
