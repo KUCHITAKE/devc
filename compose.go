@@ -61,7 +61,7 @@ func parseComposeConfig(ws workspace, raw map[string]json.RawMessage) (*composeC
 // writeComposeOverride generates a temporary override YAML for the compose service.
 // It injects overrideCommand (sleep infinity), mounts, and ports.
 // Returns the path to the generated file; caller must clean up.
-func writeComposeOverride(ws workspace, cc *composeConfig, workspaceFolder string, mounts []hostMount, ports []string) (string, error) {
+func writeComposeOverride(ws workspace, cc *composeConfig, workspaceFolder string, mounts []hostMount, ports []string, env map[string]string) (string, error) {
 	var b strings.Builder
 	b.WriteString("services:\n")
 	b.WriteString("  " + cc.Service + ":\n")
@@ -73,6 +73,19 @@ func writeComposeOverride(ws workspace, cc *composeConfig, workspaceFolder strin
 	// Set working directory so lifecycle hooks and exec run in the workspace
 	if workspaceFolder != "" {
 		b.WriteString("    working_dir: " + workspaceFolder + "\n")
+	}
+
+	// Environment variables from containerEnv
+	if len(env) > 0 {
+		envKeys := make([]string, 0, len(env))
+		for k := range env {
+			envKeys = append(envKeys, k)
+		}
+		sort.Strings(envKeys)
+		b.WriteString("    environment:\n")
+		for _, k := range envKeys {
+			fmt.Fprintf(&b, "      %s: %q\n", k, env[k])
+		}
 	}
 
 	// Volumes: user mounts only (dotfiles, credentials).
@@ -339,7 +352,7 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 
 	// 4. Generate override YAML
 	mounts := buildHostMounts(ucfg)
-	overridePath, err := writeComposeOverride(ws, cc, cfg.RemoteWorkspaceFolder, mounts, resolvedPorts)
+	overridePath, err := writeComposeOverride(ws, cc, cfg.RemoteWorkspaceFolder, mounts, resolvedPorts, cfg.ContainerEnv)
 	if err != nil {
 		return err
 	}

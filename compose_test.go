@@ -90,7 +90,7 @@ func TestWriteComposeOverride_Basic(t *testing.T) {
 	}
 	ports := []string{"3000:3000", "5432:5432"}
 
-	path, err := writeComposeOverride(ws, cc, "/workspaces/myproject", mounts, ports)
+	path, err := writeComposeOverride(ws, cc, "/workspaces/myproject", mounts, ports, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestWriteComposeOverride_NoOverrideCommand(t *testing.T) {
 		OverrideCommand: false,
 	}
 
-	path, err := writeComposeOverride(ws, cc, "/workspaces/myproject", nil, nil)
+	path, err := writeComposeOverride(ws, cc, "/workspaces/myproject", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestWriteComposeOverride_NoPorts(t *testing.T) {
 		OverrideCommand: true,
 	}
 
-	path, err := writeComposeOverride(ws, cc, "/workspaces/myproject", nil, nil)
+	path, err := writeComposeOverride(ws, cc, "/workspaces/myproject", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,6 +189,46 @@ func TestWriteComposeOverride_NoPorts(t *testing.T) {
 
 	if strings.Contains(content, "ports:") {
 		t.Fatal("should not contain ports section when no ports specified")
+	}
+}
+
+func TestWriteComposeOverride_ContainerEnv(t *testing.T) {
+	dir := t.TempDir()
+	dcDir := filepath.Join(dir, ".devcontainer")
+	if err := os.MkdirAll(dcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := workspace{dir: dir, name: "myproject"}
+	cc := &composeConfig{
+		Service:         "app",
+		OverrideCommand: true,
+	}
+	env := map[string]string{
+		"DB_HOST": "postgres",
+		"DB_PORT": "5432",
+	}
+
+	path, err := writeComposeOverride(ws, cc, "/workspaces/myproject", nil, nil, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Remove(path) }()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "environment:") {
+		t.Fatal("missing environment section")
+	}
+	if !strings.Contains(content, `DB_HOST: "postgres"`) {
+		t.Fatal("missing DB_HOST")
+	}
+	if !strings.Contains(content, `DB_PORT: "5432"`) {
+		t.Fatal("missing DB_PORT")
 	}
 }
 
