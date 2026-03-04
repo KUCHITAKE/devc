@@ -1,8 +1,8 @@
 # devc
 
-devcontainer CLI のラッパー。Neovim (nightly)、Claude Code、ripgrep、GitHub CLI を自動注入して起動する。
+devcontainer をDocker Engine API で直接起動・管理するCLI。devcontainer CLI や Node.js は不要。
 
-既存の `devcontainer.json` はそのまま動く。機能は `--additional-features` で注入され、ポートは `forwardPorts` / `appPort` から自動変換される。
+image ベースと Docker Compose ベースの両方に対応。ユーザー固有の features、dotfiles、マウントは `~/.config/devc/config.json` で設定する。
 
 ## インストール
 
@@ -42,25 +42,84 @@ devc clean ~/project                     # コンテナ & volumes 削除
 | `-p, --publish` | ポート公開 (例: `-p 3000:3000`)。繰り返し指定可 |
 | `--rebuild` | コンテナをゼロからリビルド |
 
-## 注入される機能
+## 対応する devcontainer.json
 
-- [Neovim (nightly)](https://github.com/duduribeiro/devcontainer-features/tree/main/src/neovim)
-- [Claude Code](https://github.com/anthropics/devcontainer-features/tree/main/src/claude-code)
-- [ripgrep](https://github.com/jungaretti/features/tree/main/src/ripgrep)
-- [GitHub CLI](https://github.com/devcontainers/features/tree/main/src/github-cli)
+### image ベース
 
-## ホストからのマウント
+```jsonc
+{
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": { ... },
+  "forwardPorts": [3000],
+  "remoteUser": "vscode"
+}
+```
 
-以下のディレクトリ/ファイルが存在する場合、自動的にコンテナへマウントされる:
+### build.dockerfile ベース
 
-| ホスト | 用途 |
-|--------|------|
-| `~/.config/nvim` | Neovim 設定 |
-| `~/.claude` | Claude Code 設定 |
-| `~/.claude.json` | MCP サーバー設定 |
-| `~/.ssh` | SSH 鍵 |
+```jsonc
+{
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "args": { "VARIANT": "3.11" },
+    "target": "dev"
+  }
+}
+```
 
-Git の `user.name` / `user.email` と `gh auth token` もコンテナに引き継がれる。
+### Docker Compose ベース
+
+```jsonc
+{
+  "dockerComposeFile": "docker-compose.yml",   // string | string[]
+  "service": "app",                             // 必須: メインサービス名
+  "runServices": ["app", "db"],                 // 省略可: 起動するサービス (省略時は全サービス)
+  "overrideCommand": true                       // 省略可: デフォルト true → sleep infinity 注入
+}
+```
+
+Compose モードでは `docker compose` CLI (v2) を使用。features はランタイムインストールされる。
+
+## ユーザー設定
+
+`~/.config/devc/config.json` でユーザー固有の設定を行う:
+
+```json
+{
+  "features": {
+    "ghcr.io/duduribeiro/devcontainer-features/neovim:1": { "version": "nightly" },
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
+    "ghcr.io/jungaretti/features/ripgrep:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "dotfiles": [
+    "~/.config/nvim",
+    "~/.claude",
+    "~/.claude.json",
+    "~/.ssh"
+  ],
+  "mounts": [
+    { "source": "~/work", "target": "/home/user/work" }
+  ]
+}
+```
+
+- **features**: 全プロジェクト共通で注入する OCI features (プロジェクト側の features が優先)
+- **dotfiles**: コンテナ内の `/opt/devc-dotfiles/` にマウントされ、シンボリックリンクで配置される
+- **mounts**: 追加のバインドマウント
+
+Git の `user.name` / `user.email` と `gh auth token` は自動的にコンテナに引き継がれる。
+
+## ライフサイクルフック
+
+devcontainer.json の以下のフックに対応:
+
+- `onCreateCommand` — コンテナ初回作成時
+- `postCreateCommand` — コンテナ作成後
+- `postStartCommand` — コンテナ起動時 (再起動含む)
+
+string、配列、オブジェクト形式いずれにも対応。
 
 ## ポート解決
 
@@ -85,8 +144,8 @@ make build            # バイナリビルド
 ## リリース
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 # GitHub Actions が goreleaser でクロスビルド & リリース作成
 ```
 
