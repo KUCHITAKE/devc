@@ -1,11 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"os"
-	"os/exec"
 
-	"github.com/charmbracelet/log"
+	"github.com/docker/docker/api/types/container"
 	"github.com/spf13/cobra"
 )
 
@@ -36,34 +35,29 @@ func runDown(dir string) error {
 		files = composeFiles(ws, raw)
 	}
 
+	ctx := context.Background()
+
 	if len(files) > 0 {
 		project := ws.name + "_devcontainer"
-		log.Info("Stopping containers", "project", project)
-		args := []string{"compose", "-p", project}
-		for _, f := range files {
-			args = append(args, "-f", f)
-		}
-		args = append(args, "down")
-		cmd := exec.Command("docker", args...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("docker compose down failed: %w", err)
+		printProgress("Stopping containers", project)
+		if err := composeDown(ctx, project, false); err != nil {
+			return fmt.Errorf("compose down failed: %w", err)
 		}
 	} else {
 		containerID, err := findContainerByWorkspace(ws)
 		if err != nil {
 			return err
 		}
-		log.Info("Stopping container", "id", containerID[:12])
-		cmd := exec.Command("docker", "stop", containerID)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("docker stop failed: %w", err)
+		printProgress("Stopping container", containerID[:12])
+		cli, err := getDockerClient()
+		if err != nil {
+			return fmt.Errorf("docker client: %w", err)
+		}
+		if err := cli.ContainerStop(ctx, containerID, container.StopOptions{}); err != nil {
+			return fmt.Errorf("container stop failed: %w", err)
 		}
 	}
 
-	log.Info("Down complete")
+	printDone("Down complete", "")
 	return nil
 }

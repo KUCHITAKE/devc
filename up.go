@@ -1,14 +1,13 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
-	"syscall"
+	"strings"
 
-	"github.com/charmbracelet/huh/spinner"
-	"github.com/charmbracelet/log"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
 	"github.com/spf13/cobra"
 )
 
@@ -55,113 +54,166 @@ func newRebuildCmd() *cobra.Command {
 }
 
 func runUp(dir string, opts upOptions) error {
+	ctx := context.Background()
+
 	// 1. Resolve workspace
 	ws, err := resolveWorkspace(dir)
 	if err != nil {
 		return err
 	}
+	printDone("Workspace resolved", ws.name)
 
-	// 2. Extract credentials
+	// 2. Load user config
+	ucfg, err := loadUserConfig()
+	if err != nil {
+		return fmt.Errorf("load user config: %w", err)
+	}
+	printDone("Config loaded", fmt.Sprintf("%d features, %d dotfiles", len(ucfg.Features), len(ucfg.Dotfiles)))
+
+	// 3. Extract credentials
 	if err := extractCredentials(); err != nil {
 		return err
 	}
 
-	// 3. Ensure devcontainer.json exists
+	// 4. Ensure devcontainer.json exists
 	if err := ensureDevcontainerJSON(ws); err != nil {
 		return err
 	}
 
-	// 4. Read devcontainer.json and collect ports
-	raw, err := readDevcontainerJSON(ws)
+	// 5. Parse devcontainer.json
+	cfg, err := parseDevcontainerConfig(ws)
 	if err != nil {
 		return err
 	}
 
-	existing := isContainerRunning(ws)
+	// 6. Compose-based devcontainers are not supported
+	if composeFiles(ws, cfg.Raw) != nil {
+		return fmt.Errorf("compose-based devcontainers not supported; install devcontainer CLI")
+	}
 
-	// 5. Build merged config with port args (skip port resolution for existing containers)
-	var configPath string
-	if !existing {
-		ports := collectPorts(raw, opts.ports)
-		configPath, err = mergedConfigPath(ws, raw, ports)
-		if err != nil {
+	// 7. Check existing container (running or stopped)
+	containerID, findErr := findContainerByWorkspace(ws)
+
+	if findErr == nil && !opts.rebuild {
+		if isContainerRunning(containerID) {
+			// Already running — attach directly
+			printDone("Attaching to container", containerID[:12])
+		} else {
+			// Stopped container — restart it
+			printProgress("Restarting container", containerID[:12])
+			cli, cliErr := getDockerClient()
+			if cliErr != nil {
+				return fmt.Errorf("docker client: %w", cliErr)
+			}
+			if err := cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+				return fmt.Errorf("container restart: %w", err)
+			}
+			// Run postStartCommand only (container already created)
+			postStartHooks := parseLifecycleHook(cfg.PostStartCommand)
+			if err := runLifecycleHooks(ctx, containerID, cfg.RemoteUser, postStartHooks); err != nil {
+				printWarn("Lifecycle hooks had errors", err.Error())
+			}
+		}
+
+		// Setup and enter
+		if err := runWithSpinner("Setting up container", "", func() error {
+			if err := setupContainer(containerID, cfg.RemoteUser, ucfg.Dotfiles); err != nil {
+				printWarn("Container setup had errors", err.Error())
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
-	}
-	if configPath != "" {
-		defer func() { _ = os.Remove(configPath) }()
+
+		printDone("Ready", "")
+		printProgress("Entering container", cfg.RemoteUser+"@devc-"+ws.name)
+		exitCode, err := containerExecInteractive(ctx, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder, []string{"bash", "-l"})
+		if err != nil {
+			return fmt.Errorf("interactive exec failed: %w", err)
+		}
+		os.Exit(exitCode)
+		return nil
 	}
 
-	// 6. Build mount args
-	mountArgs := buildMountArgs(hostMounts())
-
-	// 7. Run devcontainer up
-	if existing {
-		log.Info("Attaching to existing container", "project", ws.name)
-	} else {
-		log.Info("Starting devcontainer", "project", ws.name)
-	}
-	cmdArgs := []string{"up",
-		"--workspace-folder", ws.dir,
-		"--additional-features", additionalFeatures,
-	}
-	cmdArgs = append(cmdArgs, mountArgs...)
+	// 8. Rebuild: remove existing container + cached image
 	if opts.rebuild {
-		cmdArgs = append(cmdArgs, "--remove-existing-container")
-	}
-	if configPath != "" {
-		cmdArgs = append(cmdArgs, "--config", configPath)
-	}
-
-	var stdout bytes.Buffer
-	cmd := exec.Command("devcontainer", cmdArgs...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("devcontainer up failed: %w\n%s", err, stdout.String())
-	}
-
-	// 8. Parse output
-	result, err := parseUpOutput(stdout.Bytes())
-	if err != nil {
-		return fmt.Errorf("%w\nOutput:\n%s", err, stdout.String())
-	}
-
-	if result.RemoteUser == "" {
-		result.RemoteUser = "vscode"
-	}
-	if result.RemoteWorkspaceFolder == "" {
-		result.RemoteWorkspaceFolder = "/workspaces/" + ws.name
-	}
-
-	log.Info("Entering container", "id", result.ContainerID[:12], "user", result.RemoteUser)
-
-	// 9. Setup container with spinner
-	if err := spinner.New().
-		Title("Setting up container...").
-		Action(func() {
-			if err := setupContainer(result.ContainerID, result.RemoteUser); err != nil {
-				log.Warn("Container setup had errors", "err", err)
+		if containerID, err := findContainerByWorkspace(ws); err == nil {
+			printProgress("Removing container", containerID[:12])
+			cli, cliErr := getDockerClient()
+			if cliErr == nil {
+				_ = cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true})
 			}
-		}).
-		Run(); err != nil {
+		}
+		// Remove cached image
+		allFeatures := mergeFeatures(ucfg.Features, cfg.Features)
+		baseImage := cfg.Image
+		if cfg.Build != nil && cfg.Build.Dockerfile != "" {
+			baseImage = fmt.Sprintf("devc-%s-intermediate:latest", ws.name)
+		}
+		if baseImage != "" {
+			tag := computeImageTag(ws.name, baseImage, allFeatures)
+			cli, cliErr := getDockerClient()
+			if cliErr == nil {
+				_, _ = cli.ImageRemove(ctx, tag, image.RemoveOptions{Force: true})
+			}
+		}
+	}
+
+	// 9. Collect and resolve ports
+	ports := collectPorts(cfg.Raw, opts.ports)
+	resolvedPorts := resolveAllPorts(ports)
+	if len(resolvedPorts) > 0 {
+		printDone("Ports", strings.Join(resolvedPorts, ", "))
+	}
+
+	// 10. Build image (with spinner for feature pull, build output streamed)
+	printProgress("Building image", ws.name)
+	imageTag, err := buildFeatureImage(ctx, ws, cfg, ucfg.Features)
+	if err != nil {
+		return fmt.Errorf("image build: %w", err)
+	}
+	printDone("Image built", imageTag)
+
+	// 11. Create and start container
+	containerID, err = createAndStartContainer(ctx, ws, cfg, imageTag, resolvedPorts, buildHostMounts(ucfg))
+	if err != nil {
+		return fmt.Errorf("container create: %w", err)
+	}
+
+	// 12. Lifecycle hooks
+	onCreateHooks := parseLifecycleHook(cfg.OnCreateCommand)
+	postCreateHooks := parseLifecycleHook(cfg.PostCreateCommand)
+	postStartHooks := parseLifecycleHook(cfg.PostStartCommand)
+	if err := runLifecycleHooks(ctx, containerID, cfg.RemoteUser, onCreateHooks, postCreateHooks, postStartHooks); err != nil {
+		printWarn("Lifecycle hooks had errors", err.Error())
+	}
+
+	// 13. Setup container with spinner
+	if err := runWithSpinner("Setting up container", "", func() error {
+		if err := setupContainer(containerID, cfg.RemoteUser, ucfg.Dotfiles); err != nil {
+			printWarn("Container setup had errors", err.Error())
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
 
-	// 10. Clean up temp config before exec (defer won't run after syscall.Exec)
-	if configPath != "" {
-		_ = os.Remove(configPath)
-	}
-
-	// Process replacement with docker exec
-	dockerBin, err := exec.LookPath("docker")
+	// 14. Interactive exec into container
+	printDone("Ready", "")
+	printProgress("Entering container", cfg.RemoteUser+"@devc-"+ws.name)
+	exitCode, err := containerExecInteractive(ctx, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder, []string{"bash", "-l"})
 	if err != nil {
-		return fmt.Errorf("docker not found: %w", err)
+		return fmt.Errorf("interactive exec failed: %w", err)
 	}
-	execArgs := []string{"docker", "exec", "-it",
-		"-u", result.RemoteUser,
-		"-w", result.RemoteWorkspaceFolder,
-		result.ContainerID, "bash", "-l",
+	os.Exit(exitCode)
+	return nil // unreachable
+}
+
+// resolveAllPorts resolves bare port numbers to host:container format.
+func resolveAllPorts(ports []string) []string {
+	resolved := make([]string, len(ports))
+	for i, p := range ports {
+		resolved[i] = resolvePort(p)
 	}
-	return syscall.Exec(dockerBin, execArgs, os.Environ())
+	return resolved
 }

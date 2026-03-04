@@ -2,13 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/log"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 )
 
 func extractCredentials() error {
@@ -31,81 +33,68 @@ func extractCredentials() error {
 	return nil
 }
 
-func buildMountArgs(mounts []hostMount) []string {
-	var args []string
-	for _, m := range mounts {
-		if _, err := os.Stat(m.source); err == nil {
-			args = append(args, "--mount", fmt.Sprintf("type=bind,source=%s,target=%s", m.source, m.target))
-		}
+// isContainerRunning checks if a specific container is running.
+func isContainerRunning(containerID string) bool {
+	cli, err := getDockerClient()
+	if err != nil {
+		return false
 	}
-	return args
-}
-
-// isContainerRunning checks if a devcontainer is already running for the workspace.
-func isContainerRunning(ws workspace) bool {
-	out, err := exec.Command("docker", "ps", "-q",
-		"--filter", "label=devcontainer.local_folder="+ws.dir,
-	).Output()
-	return err == nil && strings.TrimSpace(string(out)) != ""
+	info, err := cli.ContainerInspect(context.Background(), containerID)
+	if err != nil {
+		return false
+	}
+	return info.State != nil && info.State.Running
 }
 
 // findContainerByWorkspace finds a devcontainer by its workspace folder label.
 func findContainerByWorkspace(ws workspace) (string, error) {
-	out, err := exec.Command("docker", "ps", "-aq",
-		"--filter", "label=devcontainer.local_folder="+ws.dir,
-	).Output()
+	cli, err := getDockerClient()
 	if err != nil {
-		return "", fmt.Errorf("docker ps failed: %w", err)
+		return "", fmt.Errorf("docker client: %w", err)
 	}
-	id := strings.TrimSpace(string(out))
-	if id == "" {
+	containers, err := cli.ContainerList(context.Background(), container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("label", "devcontainer.local_folder="+ws.dir),
+		),
+	})
+	if err != nil {
+		return "", fmt.Errorf("container list failed: %w", err)
+	}
+	if len(containers) == 0 {
 		return "", fmt.Errorf("no devcontainer found for %s", ws.dir)
 	}
-	// If multiple containers match (shouldn't happen for non-compose), take the first.
-	if lines := strings.Split(id, "\n"); len(lines) > 1 {
-		id = lines[0]
-	}
-	return id, nil
+	return containers[0].ID, nil
 }
 
-func setupContainer(containerID, remoteUser string) error {
-	dockerExec := func(args ...string) error {
-		cmdArgs := append([]string{"exec", "-u", remoteUser, containerID}, args...)
-		cmd := exec.Command("docker", cmdArgs...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
-	}
-	dockerExecOutput := func(args ...string) (string, error) {
-		cmdArgs := append([]string{"exec", "-u", remoteUser, containerID}, args...)
-		out, err := exec.Command("docker", cmdArgs...).Output()
-		return strings.TrimSpace(string(out)), err
-	}
+func setupContainer(containerID, remoteUser string, dotfiles []string) error {
+	ctx := context.Background()
 
 	// Discover remote home
-	remoteHome, err := dockerExecOutput("sh", "-c", "echo $HOME")
+	remoteHome, err := containerExecOutput(ctx, containerID, remoteUser, []string{"sh", "-c", "echo $HOME"})
 	if err != nil {
 		return fmt.Errorf("get remote home: %w", err)
 	}
-	log.Info("Remote home", "path", remoteHome)
 
-	// Create .config and symlinks
-	_ = dockerExec("mkdir", "-p", remoteHome+"/.config")
-	_ = dockerExec("ln", "-sfn", dotfilesDir+"/config-nvim", remoteHome+"/.config/nvim")
-	_ = dockerExec("ln", "-sfn", dotfilesDir+"/claude", remoteHome+"/.claude")
-	_ = dockerExec("ln", "-sfn", dotfilesDir+"/claude.json", remoteHome+"/.claude.json")
-	_ = dockerExec("ln", "-sfn", dotfilesDir+"/ssh", remoteHome+"/.ssh")
+	// Create symlinks for dotfiles
+	for _, df := range dotfiles {
+		rel := dotfileRelPath(df)
+		staging := filepath.Join(dotfilesDir, rel)
+		target := filepath.Join(remoteHome, rel)
+		_ = containerExec(ctx, containerID, remoteUser, []string{"mkdir", "-p", filepath.Dir(target)})
+		_ = containerExec(ctx, containerID, remoteUser, []string{"ln", "-sfn", staging, target})
+	}
 
 	// Git config (non-fatal)
 	if data, err := os.ReadFile("/tmp/devc-credentials/git-user-name"); err == nil {
-		_ = dockerExec("git", "config", "--global", "user.name", strings.TrimSpace(string(data)))
+		_ = containerExec(ctx, containerID, remoteUser, []string{"git", "config", "--global", "user.name", strings.TrimSpace(string(data))})
 	}
 	if data, err := os.ReadFile("/tmp/devc-credentials/git-user-email"); err == nil {
-		_ = dockerExec("git", "config", "--global", "user.email", strings.TrimSpace(string(data)))
+		_ = containerExec(ctx, containerID, remoteUser, []string{"git", "config", "--global", "user.email", strings.TrimSpace(string(data))})
 	}
 	// gh auth (non-fatal)
 	if _, err := os.Stat("/tmp/devc-credentials/gh-token"); err == nil {
-		_ = dockerExec("bash", "-c", "gh auth login --with-token < /tmp/devc-credentials/gh-token && gh auth setup-git")
+		_ = containerExec(ctx, containerID, remoteUser, []string{"bash", "-c", "gh auth login --with-token < /tmp/devc-credentials/gh-token && gh auth setup-git"})
 	}
 
 	return nil

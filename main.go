@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/charmbracelet/log"
 	"github.com/spf13/cobra"
 )
 
@@ -49,11 +48,11 @@ func rewriteLegacyArgs(args []string) []string {
 func buildRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "devc <command> [options] [workspace-dir]",
-		Short: "Launch a devcontainer with Neovim, Claude Code, and ripgrep",
-		Long: `devc launches a devcontainer with Neovim (nightly), Claude Code, and ripgrep.
-
-Features are injected via --additional-features so existing devcontainer.json
-configs work as-is. Ports from forwardPorts/appPort are auto-converted to runArgs.`,
+		Short: "Launch and manage devcontainers",
+		Long: `devc launches devcontainers using the Docker Engine API.
+User-specific features and dotfiles are configured in ~/.config/devc/config.json.
+No devcontainer CLI or Node.js required. Ports from forwardPorts/appPort are
+automatically published.`,
 		Example: `  devc ~/project
   devc up -p 3000:3000 -p 5173:5173 ~/project
   devc rebuild .
@@ -73,8 +72,6 @@ configs work as-is. Ports from forwardPorts/appPort are auto-converted to runArg
 }
 
 func main() {
-	log.SetReportTimestamp(false)
-
 	// Expand ~ in arguments (shell doesn't expand it in all contexts)
 	for i, arg := range os.Args[1:] {
 		if strings.HasPrefix(arg, "~/") {
@@ -87,7 +84,7 @@ func main() {
 	os.Args = append(os.Args[:1], rewriteLegacyArgs(os.Args[1:])...)
 
 	if err := buildRootCmd().Execute(); err != nil {
-		log.Error(err)
+		printError(err.Error(), "")
 		os.Exit(1)
 	}
 }

@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/charmbracelet/log"
 )
 
 type workspace struct {
@@ -17,10 +15,76 @@ type workspace struct {
 	name string
 }
 
-type upResult struct {
-	ContainerID           string `json:"containerId"`
-	RemoteUser            string `json:"remoteUser"`
-	RemoteWorkspaceFolder string `json:"remoteWorkspaceFolder"`
+type devcontainerConfig struct {
+	Image                 string
+	Build                 *buildConfig
+	Features              map[string]map[string]interface{}
+	RemoteUser            string
+	RemoteWorkspaceFolder string
+	ContainerEnv          map[string]string
+	OnCreateCommand       json.RawMessage
+	PostCreateCommand     json.RawMessage
+	PostStartCommand      json.RawMessage
+	Raw                   map[string]json.RawMessage
+}
+
+type buildConfig struct {
+	Dockerfile string            `json:"dockerfile"`
+	Context    string            `json:"context"`
+	Args       map[string]string `json:"args"`
+	Target     string            `json:"target"`
+}
+
+func parseDevcontainerConfig(ws workspace) (*devcontainerConfig, error) {
+	raw, err := readDevcontainerJSON(ws)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := &devcontainerConfig{
+		RemoteUser:            "vscode",
+		RemoteWorkspaceFolder: "/workspaces/" + ws.name,
+		Raw:                   raw,
+	}
+
+	if v, ok := raw["image"]; ok {
+		_ = json.Unmarshal(v, &cfg.Image)
+	}
+	if v, ok := raw["build"]; ok {
+		var bc buildConfig
+		if err := json.Unmarshal(v, &bc); err == nil {
+			cfg.Build = &bc
+		}
+	}
+	if v, ok := raw["features"]; ok {
+		_ = json.Unmarshal(v, &cfg.Features)
+	}
+	if v, ok := raw["remoteUser"]; ok {
+		var u string
+		if err := json.Unmarshal(v, &u); err == nil && u != "" {
+			cfg.RemoteUser = u
+		}
+	}
+	if v, ok := raw["workspaceFolder"]; ok {
+		var f string
+		if err := json.Unmarshal(v, &f); err == nil && f != "" {
+			cfg.RemoteWorkspaceFolder = f
+		}
+	}
+	if v, ok := raw["containerEnv"]; ok {
+		_ = json.Unmarshal(v, &cfg.ContainerEnv)
+	}
+	if v, ok := raw["onCreateCommand"]; ok {
+		cfg.OnCreateCommand = v
+	}
+	if v, ok := raw["postCreateCommand"]; ok {
+		cfg.PostCreateCommand = v
+	}
+	if v, ok := raw["postStartCommand"]; ok {
+		cfg.PostStartCommand = v
+	}
+
+	return cfg, nil
 }
 
 func resolveWorkspace(dir string) (workspace, error) {
@@ -41,7 +105,7 @@ func ensureDevcontainerJSON(ws workspace) error {
 		return err
 	}
 	content := fmt.Sprintf("{\n  \"name\": %q,\n  \"image\": \"mcr.microsoft.com/devcontainers/base:ubuntu\"\n}\n", ws.name)
-	log.Info("Generated", "file", dcJSON)
+	printDone("Generated devcontainer.json", dcJSON)
 	return os.WriteFile(dcJSON, []byte(content), 0o644)
 }
 
@@ -164,72 +228,13 @@ func resolvePort(port string) string {
 		if err == nil {
 			_ = ln.Close()
 			if hostPort != containerPort {
-				log.Warn("Port in use, remapped", "container", containerPort, "host", hostPort)
+				printWarn("Port remapped", fmt.Sprintf("%d → %d", containerPort, hostPort))
 			}
 			return fmt.Sprintf("%d:%d", hostPort, containerPort)
 		}
 		hostPort++
 	}
 	// Give up, let Docker decide
-	log.Warn("Could not find available host port", "container", containerPort)
+	printWarn("No host port available", fmt.Sprintf("%d", containerPort))
 	return port
-}
-
-func mergedConfigPath(ws workspace, raw map[string]json.RawMessage, ports []string) (string, error) {
-	if len(ports) == 0 {
-		return "", nil
-	}
-
-	// Resolve bare ports to host:container format
-	resolved := make([]string, len(ports))
-	for i, p := range ports {
-		resolved[i] = resolvePort(p)
-	}
-
-	log.Info("Ports", "ports", strings.Join(resolved, ", "))
-
-	var portArgs []string
-	for _, p := range resolved {
-		portArgs = append(portArgs, "-p", p)
-	}
-
-	// Merge with existing runArgs
-	var existingRunArgs []string
-	if ra, ok := raw["runArgs"]; ok {
-		_ = json.Unmarshal(ra, &existingRunArgs)
-	}
-	merged := append(existingRunArgs, portArgs...)
-
-	mergedJSON, err := json.Marshal(merged)
-	if err != nil {
-		return "", err
-	}
-	raw["runArgs"] = json.RawMessage(mergedJSON)
-
-	out, err := json.MarshalIndent(raw, "", "  ")
-	if err != nil {
-		return "", err
-	}
-
-	configPath := filepath.Join(ws.dir, ".devcontainer", ".devcontainer.json")
-	if err := os.WriteFile(configPath, out, 0o644); err != nil {
-		return "", err
-	}
-	return configPath, nil
-}
-
-func parseUpOutput(out []byte) (upResult, error) {
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	// Reverse scan for the JSON line containing containerId
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" || line[0] != '{' {
-			continue
-		}
-		var result upResult
-		if err := json.Unmarshal([]byte(line), &result); err == nil && result.ContainerID != "" {
-			return result, nil
-		}
-	}
-	return upResult{}, fmt.Errorf("no valid JSON with containerId found in devcontainer up output")
 }

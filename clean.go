@@ -1,11 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"os"
-	"os/exec"
 
-	"github.com/charmbracelet/log"
+	"github.com/docker/docker/api/types/container"
 	"github.com/spf13/cobra"
 )
 
@@ -36,36 +35,31 @@ func runClean(dir string) error {
 		files = composeFiles(ws, raw)
 	}
 
+	ctx := context.Background()
+
 	if len(files) > 0 {
 		project := ws.name + "_devcontainer"
-		log.Info("Removing containers and volumes", "project", project)
-		args := []string{"compose", "-p", project}
-		for _, f := range files {
-			args = append(args, "-f", f)
-		}
-		args = append(args, "down", "-v")
-		cmd := exec.Command("docker", args...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("docker compose down -v failed: %w", err)
+		printProgress("Removing containers", project)
+		if err := composeDown(ctx, project, true); err != nil {
+			return fmt.Errorf("compose down -v failed: %w", err)
 		}
 	} else {
 		containerID, err := findContainerByWorkspace(ws)
 		if err != nil {
-			log.Warn("No container found", "err", err)
-			log.Info("Clean complete (nothing to remove)")
+			printWarn("No container found", "")
+			printDone("Clean complete", "nothing to remove")
 			return nil
 		}
-		log.Info("Removing container", "id", containerID[:12])
-		cmd := exec.Command("docker", "rm", "-f", containerID)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("docker rm failed: %w", err)
+		printProgress("Removing container", containerID[:12])
+		cli, err := getDockerClient()
+		if err != nil {
+			return fmt.Errorf("docker client: %w", err)
+		}
+		if err := cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true}); err != nil {
+			return fmt.Errorf("container remove failed: %w", err)
 		}
 	}
 
-	log.Info("Clean complete")
+	printDone("Clean complete", "")
 	return nil
 }
