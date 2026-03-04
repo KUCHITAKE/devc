@@ -81,8 +81,12 @@ func TestWriteComposeOverride_Basic(t *testing.T) {
 		Service:         "app",
 		OverrideCommand: true,
 	}
+	credDir := filepath.Join(dir, "devc-credentials")
+	if err := os.MkdirAll(credDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	mounts := []hostMount{
-		{source: "/tmp/devc-credentials", target: "/tmp/devc-credentials"},
+		{source: credDir, target: "/tmp/devc-credentials"},
 	}
 	ports := []string{"3000:3000", "5432:5432"}
 
@@ -114,7 +118,7 @@ func TestWriteComposeOverride_Basic(t *testing.T) {
 	if !strings.Contains(content, "volumes:") {
 		t.Fatal("missing volumes section")
 	}
-	if !strings.Contains(content, "/tmp/devc-credentials:/tmp/devc-credentials") {
+	if !strings.Contains(content, credDir+":/tmp/devc-credentials") {
 		t.Fatal("missing credentials mount")
 	}
 	if !strings.Contains(content, "ports:") {
