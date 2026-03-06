@@ -120,6 +120,7 @@ func createAndStartContainer(ctx context.Context, ws workspace, cfg *devcontaine
 	for k, v := range cfg.ContainerEnv {
 		envList = append(envList, k+"="+v)
 	}
+	envList = append(envList, devcContainerEnv+"=1")
 	sort.Strings(envList)
 
 	// Build port bindings

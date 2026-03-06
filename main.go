@@ -72,6 +72,15 @@ automatically published.`,
 }
 
 func main() {
+	// Inside a devc container, use the internal command set
+	if isInsideContainer() {
+		if err := buildInternalRootCmd().Execute(); err != nil {
+			printError(err.Error(), "")
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Expand ~ in arguments (shell doesn't expand it in all contexts)
 	for i, arg := range os.Args[1:] {
 		if strings.HasPrefix(arg, "~/") {

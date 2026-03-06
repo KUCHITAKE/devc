@@ -75,16 +75,22 @@ func writeComposeOverride(ws workspace, cc *composeConfig, workspaceFolder strin
 		b.WriteString("    working_dir: " + workspaceFolder + "\n")
 	}
 
-	// Environment variables from containerEnv
-	if len(env) > 0 {
-		envKeys := make([]string, 0, len(env))
-		for k := range env {
+	// Environment variables: DEVC_CONTAINER + containerEnv
+	{
+		allEnv := make(map[string]string)
+		for k, v := range env {
+			allEnv[k] = v
+		}
+		allEnv[devcContainerEnv] = "1"
+
+		envKeys := make([]string, 0, len(allEnv))
+		for k := range allEnv {
 			envKeys = append(envKeys, k)
 		}
 		sort.Strings(envKeys)
 		b.WriteString("    environment:\n")
 		for _, k := range envKeys {
-			fmt.Fprintf(&b, "      %s: %q\n", k, env[k])
+			fmt.Fprintf(&b, "      %s: %q\n", k, allEnv[k])
 		}
 	}
 
@@ -385,7 +391,13 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 		printWarn("Feature installation had errors", err.Error())
 	}
 
-	// 8. Lifecycle hooks
+	// 8. Inject devc binary and metadata
+	meta := buildContainerMeta(ws, cfg, resolvedPorts, allFeatures, ucfg.Dotfiles, "compose", "")
+	if err := injectDevcIntoContainer(ctx, containerID, meta); err != nil {
+		printWarn("devc injection failed", err.Error())
+	}
+
+	// 9. Lifecycle hooks
 	onCreateHooks := parseLifecycleHook(cfg.OnCreateCommand)
 	postCreateHooks := parseLifecycleHook(cfg.PostCreateCommand)
 	postStartHooks := parseLifecycleHook(cfg.PostStartCommand)
@@ -393,7 +405,7 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 		printWarn("Lifecycle hooks had errors", err.Error())
 	}
 
-	// 9. Setup container
+	// 10. Setup container
 	if err := runWithSpinner("Setting up container", "", func() error {
 		if err := setupContainer(containerID, cfg.RemoteUser, ucfg.Dotfiles); err != nil {
 			printWarn("Container setup had errors", err.Error())
@@ -403,7 +415,7 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 		return err
 	}
 
-	// 10. Interactive exec
+	// 11. Interactive exec
 	printDone("Ready", "")
 	printProgress("Entering container", cfg.RemoteUser+"@"+cc.Service)
 	exitCode, err := containerExecInteractive(ctx, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder, []string{"bash", "-l"})

@@ -184,7 +184,14 @@ func runUp(dir string, opts upOptions) error {
 		return fmt.Errorf("container create: %w", err)
 	}
 
-	// 12. Lifecycle hooks
+	// 12. Inject devc binary and metadata into container
+	allFeatures := mergeFeatures(ucfg.Features, cfg.Features)
+	meta := buildContainerMeta(ws, cfg, resolvedPorts, allFeatures, ucfg.Dotfiles, "image", imageTag)
+	if err := injectDevcIntoContainer(ctx, containerID, meta); err != nil {
+		printWarn("devc injection failed", err.Error())
+	}
+
+	// 13. Lifecycle hooks
 	onCreateHooks := parseLifecycleHook(cfg.OnCreateCommand)
 	postCreateHooks := parseLifecycleHook(cfg.PostCreateCommand)
 	postStartHooks := parseLifecycleHook(cfg.PostStartCommand)
@@ -192,7 +199,7 @@ func runUp(dir string, opts upOptions) error {
 		printWarn("Lifecycle hooks had errors", err.Error())
 	}
 
-	// 13. Setup container with spinner
+	// 14. Setup container with spinner
 	if err := runWithSpinner("Setting up container", "", func() error {
 		if err := setupContainer(containerID, cfg.RemoteUser, ucfg.Dotfiles); err != nil {
 			printWarn("Container setup had errors", err.Error())
@@ -202,7 +209,7 @@ func runUp(dir string, opts upOptions) error {
 		return err
 	}
 
-	// 14. Interactive exec into container
+	// 15. Interactive exec into container
 	printDone("Ready", "")
 	printProgress("Entering container", cfg.RemoteUser+"@devc-"+ws.name)
 	exitCode, err := containerExecInteractive(ctx, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder, []string{"bash", "-l"})
