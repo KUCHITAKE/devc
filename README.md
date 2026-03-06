@@ -133,12 +133,13 @@ string、配列、オブジェクト形式いずれにも対応。
 
 ## 開発
 
+Docker さえあれば開発できる。Go やリンターのインストールは不要。
+
 ```bash
-mise install          # Go, golangci-lint, pre-commit をインストール
-make setup-hooks      # pre-commit フックを有効化
-make lint             # golangci-lint 実行
-make test             # テスト実行
 make build            # バイナリビルド
+make test             # テスト実行
+make lint             # golangci-lint 実行
+make clean-cache      # Go モジュール・ビルドキャッシュを削除
 ```
 
 ## リリース
