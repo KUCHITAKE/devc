@@ -52,8 +52,8 @@ func loadUserConfig() (*userConfig, error) {
 }
 
 // buildHostMounts builds the list of bind mounts from user config (dotfiles +
-// mounts) plus the built-in credentials mount.
-func buildHostMounts(ucfg *userConfig) []hostMount {
+// mounts) plus the built-in credentials and daemon socket mounts.
+func buildHostMounts(ucfg *userConfig, wsName string) []hostMount {
 	var mounts []hostMount
 
 	// Dotfile mounts: host path → staging dir
@@ -76,6 +76,14 @@ func buildHostMounts(ucfg *userConfig) []hostMount {
 	mounts = append(mounts, hostMount{
 		source: "/tmp/devc-credentials",
 		target: "/tmp/devc-credentials",
+	})
+
+	// Daemon socket directory mount
+	sockDir := daemonSockDir(wsName)
+	_ = os.MkdirAll(sockDir, 0o755)
+	mounts = append(mounts, hostMount{
+		source: sockDir,
+		target: devcMetaDir,
 	})
 
 	return mounts

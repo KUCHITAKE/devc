@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"time"
@@ -69,98 +71,58 @@ func buildContainerMeta(ws workspace, cfg *devcontainerConfig, ports []string, f
 	}
 }
 
-// writeMetaToContainer writes meta.json into the container at /opt/devc/.
-func writeMetaToContainer(ctx context.Context, containerID string, meta *containerMeta) error {
-	cli, err := getDockerClient()
-	if err != nil {
-		return fmt.Errorf("docker client: %w", err)
-	}
+// injectDevcIntoContainer writes meta, binary, and PATH setup into the container.
+// Meta and binary are written to the host-side daemon dir (bind-mounted at /opt/devc/).
+// The PATH setup is written directly into the container filesystem.
+func injectDevcIntoContainer(ctx context.Context, containerID string, wsName string, meta *containerMeta) error {
+	sockDir := daemonSockDir(wsName)
 
+	// Write meta.json to the host-side directory (visible in container via bind mount)
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal meta: %w", err)
 	}
-
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-
-	// Create /opt/devc/ directory entry
-	if err := tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeDir,
-		Name:     "devc/",
-		Mode:     0o755,
-	}); err != nil {
-		return err
+	if err := os.WriteFile(filepath.Join(sockDir, "meta.json"), data, 0o644); err != nil {
+		return fmt.Errorf("write meta: %w", err)
 	}
 
-	// Create /opt/devc/bin/ directory entry
-	if err := tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeDir,
-		Name:     "devc/bin/",
-		Mode:     0o755,
-	}); err != nil {
-		return err
+	// Copy devc binary to host-side directory
+	binDir := filepath.Join(sockDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return fmt.Errorf("create bin dir: %w", err)
+	}
+	if err := copyExecutable(filepath.Join(binDir, "devc")); err != nil {
+		return fmt.Errorf("copy binary: %w", err)
 	}
 
-	// Write meta.json
-	if err := tw.WriteHeader(&tar.Header{
-		Name: "devc/meta.json",
-		Mode: 0o644,
-		Size: int64(len(data)),
-	}); err != nil {
-		return err
-	}
-	if _, err := tw.Write(data); err != nil {
-		return err
+	// Add /opt/devc/bin to PATH via /etc/profile.d/ (inside container filesystem)
+	if err := addDevcToPath(ctx, containerID); err != nil {
+		return fmt.Errorf("add to PATH: %w", err)
 	}
 
-	if err := tw.Close(); err != nil {
-		return err
-	}
-
-	return cli.CopyToContainer(ctx, containerID, "/opt/", &buf, containerCopyOptions())
+	return nil
 }
 
-// copyBinaryToContainer copies the current devc binary into the container.
-func copyBinaryToContainer(ctx context.Context, containerID string) error {
-	cli, err := getDockerClient()
-	if err != nil {
-		return fmt.Errorf("docker client: %w", err)
-	}
-
+// copyExecutable copies the current process's binary to dst.
+func copyExecutable(dst string) error {
 	execPath, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("get executable path: %w", err)
+		return err
 	}
-
-	binData, err := os.ReadFile(execPath)
+	src, err := os.Open(execPath)
 	if err != nil {
-		return fmt.Errorf("read binary: %w", err)
-	}
-
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-
-	if err := tw.WriteHeader(&tar.Header{
-		Name: "devc/bin/devc",
-		Mode: 0o755,
-		Size: int64(len(binData)),
-	}); err != nil {
 		return err
 	}
-	if _, err := tw.Write(binData); err != nil {
+	defer func() { _ = src.Close() }()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
 		return err
 	}
-	if err := tw.Close(); err != nil {
-		return err
-	}
+	defer func() { _ = out.Close() }()
 
-	return cli.CopyToContainer(ctx, containerID, "/opt/", &buf, containerCopyOptions())
-}
-
-// containerCopyOptions returns default options for CopyToContainer.
-func containerCopyOptions() container.CopyToContainerOptions {
-	return container.CopyToContainerOptions{}
+	_, err = io.Copy(out, src)
+	return err
 }
 
 // addDevcToPath adds /opt/devc/bin to PATH via /etc/profile.d/devc.sh.
@@ -189,21 +151,7 @@ export PATH="/opt/devc/bin:$PATH"
 		return err
 	}
 
-	return cli.CopyToContainer(ctx, containerID, "/etc/profile.d/", &buf, containerCopyOptions())
-}
-
-// injectDevcIntoContainer writes the devc binary, metadata, and PATH setup into the container.
-func injectDevcIntoContainer(ctx context.Context, containerID string, meta *containerMeta) error {
-	if err := writeMetaToContainer(ctx, containerID, meta); err != nil {
-		return fmt.Errorf("write meta: %w", err)
-	}
-	if err := copyBinaryToContainer(ctx, containerID); err != nil {
-		return fmt.Errorf("copy binary: %w", err)
-	}
-	if err := addDevcToPath(ctx, containerID); err != nil {
-		return fmt.Errorf("add to PATH: %w", err)
-	}
-	return nil
+	return cli.CopyToContainer(ctx, containerID, "/etc/profile.d/", &buf, container.CopyToContainerOptions{})
 }
 
 // loadContainerMeta reads meta.json from /opt/devc/meta.json (inside container).

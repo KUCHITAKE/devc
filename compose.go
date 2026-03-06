@@ -333,14 +333,7 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 			return err
 		}
 
-		printDone("Ready", "")
-		printProgress("Entering container", cfg.RemoteUser+"@"+cc.Service)
-		exitCode, err := containerExecInteractive(ctx, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder, []string{"bash", "-l"})
-		if err != nil {
-			return fmt.Errorf("interactive exec failed: %w", err)
-		}
-		os.Exit(exitCode)
-		return nil
+		return enterContainer(ctx, ws, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder)
 	}
 
 	// 2. Rebuild: tear down existing
@@ -357,7 +350,7 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 	}
 
 	// 4. Generate override YAML
-	mounts := buildHostMounts(ucfg)
+	mounts := buildHostMounts(ucfg, ws.name)
 	overridePath, err := writeComposeOverride(ws, cc, cfg.RemoteWorkspaceFolder, mounts, resolvedPorts, cfg.ContainerEnv)
 	if err != nil {
 		return err
@@ -393,7 +386,7 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 
 	// 8. Inject devc binary and metadata
 	meta := buildContainerMeta(ws, cfg, resolvedPorts, allFeatures, ucfg.Dotfiles, "compose", "")
-	if err := injectDevcIntoContainer(ctx, containerID, meta); err != nil {
+	if err := injectDevcIntoContainer(ctx, containerID, ws.name, meta); err != nil {
 		printWarn("devc injection failed", err.Error())
 	}
 
@@ -415,13 +408,6 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 		return err
 	}
 
-	// 11. Interactive exec
-	printDone("Ready", "")
-	printProgress("Entering container", cfg.RemoteUser+"@"+cc.Service)
-	exitCode, err := containerExecInteractive(ctx, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder, []string{"bash", "-l"})
-	if err != nil {
-		return fmt.Errorf("interactive exec failed: %w", err)
-	}
-	os.Exit(exitCode)
-	return nil
+	// 11. Enter container
+	return enterContainer(ctx, ws, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder)
 }

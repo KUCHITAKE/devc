@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +26,9 @@ func buildInternalRootCmd() *cobra.Command {
 	root.AddCommand(newInfoCmd())
 	root.AddCommand(newEnvCmd())
 	root.AddCommand(newDotfilesCmd())
+	root.AddCommand(newPortCmd())
+	root.AddCommand(newHostCmd())
+	root.AddCommand(newRebuildInternalCmd())
 
 	return root
 }
@@ -151,4 +157,116 @@ func newDotfilesCmd() *cobra.Command {
 	})
 
 	return cmd
+}
+
+// sendDaemonRequest sends a request to the host daemon via the Unix socket.
+func sendDaemonRequest(req daemonRequest) (*daemonResponse, error) {
+	conn, err := net.Dial("unix", devcSockPath)
+	if err != nil {
+		return nil, fmt.Errorf("connect to devc daemon: %w (is the host devc process running?)", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	if _, err := conn.Write(data); err != nil {
+		return nil, fmt.Errorf("send request: %w", err)
+	}
+	// Signal that we're done writing so the host can read the full request
+	if uc, ok := conn.(*net.UnixConn); ok {
+		_ = uc.CloseWrite()
+	}
+
+	respData, err := io.ReadAll(conn)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	var resp daemonResponse
+	if err := json.Unmarshal(respData, &resp); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+	return &resp, nil
+}
+
+func newPortCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "port <port> [host:container]",
+		Short: "Forward a port from the container to the host",
+		Long: `Forward a container port to the host machine.
+
+Examples:
+  devc port 8080          # forward container:8080 → host:8080
+  devc port 9090:3000     # forward container:3000 → host:9090`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := sendDaemonRequest(daemonRequest{
+				Type: "port",
+				Port: args[0],
+			})
+			if err != nil {
+				return err
+			}
+			if !resp.OK {
+				return fmt.Errorf("%s", resp.Message)
+			}
+			printDone("Port forwarded", resp.Message)
+			return nil
+		},
+	}
+}
+
+func newHostCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "host <command> [args...]",
+		Short: "Execute a command on the host machine",
+		Long: `Run a command on the host machine from inside the container.
+
+Examples:
+  devc host open http://localhost:3000
+  devc host code .
+  devc host xdg-open file.pdf`,
+		Args:               cobra.MinimumNArgs(1),
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := sendDaemonRequest(daemonRequest{
+				Type:    "host",
+				Command: args,
+			})
+			if err != nil {
+				return err
+			}
+			if resp.Output != "" {
+				fmt.Print(resp.Output)
+			}
+			if !resp.OK {
+				return fmt.Errorf("host command failed: %s", resp.Message)
+			}
+			return nil
+		},
+	}
+}
+
+func newRebuildInternalCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rebuild",
+		Short: "Request a container rebuild",
+		Long:  "Signal the host to rebuild the container. Exit the container after running this command.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := sendDaemonRequest(daemonRequest{
+				Type: "rebuild",
+			})
+			if err != nil {
+				return err
+			}
+			if !resp.OK {
+				return fmt.Errorf("%s", resp.Message)
+			}
+			printDone("Rebuild requested", resp.Message)
+			return nil
+		},
+	}
 }

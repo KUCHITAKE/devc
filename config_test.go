@@ -133,11 +133,11 @@ func TestBuildHostMounts(t *testing.T) {
 		Mounts:   []mountEntry{{Source: "~/work", Target: "~/work"}},
 	}
 
-	mounts := buildHostMounts(ucfg)
+	mounts := buildHostMounts(ucfg, "testproject")
 
-	// 2 dotfiles + 1 user mount + 1 credentials = 4
-	if len(mounts) != 4 {
-		t.Fatalf("expected 4 mounts, got %d: %+v", len(mounts), mounts)
+	// 2 dotfiles + 1 user mount + 1 credentials + 1 daemon socket = 5
+	if len(mounts) != 5 {
+		t.Fatalf("expected 5 mounts, got %d: %+v", len(mounts), mounts)
 	}
 
 	// Dotfile: ~/.config/nvim → /opt/devc-dotfiles/.config/nvim
@@ -164,21 +164,29 @@ func TestBuildHostMounts(t *testing.T) {
 		t.Errorf("mount[2].target = %q", mounts[2].target)
 	}
 
-	// Credentials always last
+	// Credentials
 	if mounts[3].source != "/tmp/devc-credentials" {
 		t.Errorf("mount[3].source = %q", mounts[3].source)
+	}
+
+	// Daemon socket directory
+	if mounts[4].target != devcMetaDir {
+		t.Errorf("mount[4].target = %q, want %q", mounts[4].target, devcMetaDir)
 	}
 }
 
 func TestBuildHostMounts_EmptyConfig(t *testing.T) {
 	ucfg := &userConfig{}
-	mounts := buildHostMounts(ucfg)
+	mounts := buildHostMounts(ucfg, "testproject")
 
-	// Only credentials mount
-	if len(mounts) != 1 {
-		t.Fatalf("expected 1 mount, got %d: %+v", len(mounts), mounts)
+	// credentials + daemon socket = 2
+	if len(mounts) != 2 {
+		t.Fatalf("expected 2 mounts, got %d: %+v", len(mounts), mounts)
 	}
 	if mounts[0].source != "/tmp/devc-credentials" {
 		t.Errorf("expected credentials mount, got %q", mounts[0].source)
+	}
+	if mounts[1].target != devcMetaDir {
+		t.Errorf("expected daemon socket mount, got target %q", mounts[1].target)
 	}
 }
