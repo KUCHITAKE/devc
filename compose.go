@@ -193,7 +193,7 @@ func composeExecStream(ctx context.Context, files []string, project string, args
 
 // composeProject returns the compose project name for a workspace.
 func composeProject(ws workspace) string {
-	return ws.name + "_devcontainer"
+	return ws.id + "_devcontainer"
 }
 
 // installFeaturesRuntime installs OCI features inside a running container.
@@ -350,7 +350,7 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 	}
 
 	// 4. Generate override YAML
-	mounts := buildHostMounts(ucfg, ws.name)
+	mounts := buildHostMounts(ucfg, ws.id)
 	overridePath, err := writeComposeOverride(ws, cc, cfg.RemoteWorkspaceFolder, mounts, resolvedPorts, cfg.ContainerEnv)
 	if err != nil {
 		return err
@@ -386,7 +386,7 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 
 	// 8. Inject devc binary and metadata
 	meta := buildContainerMeta(ws, cfg, resolvedPorts, allFeatures, ucfg.Dotfiles, "compose", "")
-	if err := injectDevcIntoContainer(ctx, containerID, ws.name, meta); err != nil {
+	if err := injectDevcIntoContainer(ctx, containerID, ws.id, meta); err != nil {
 		printWarn("devc injection failed", err.Error())
 	}
 

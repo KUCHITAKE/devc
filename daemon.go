@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 const devcSockPath = "/opt/devc/devc.sock"
@@ -55,6 +56,18 @@ func daemonSockDir(wsName string) string {
 // The daemon directory must already exist and be mounted into the container.
 func startDaemon(ctx context.Context, containerID string, sockDir string) (*daemon, error) {
 	sockPath := filepath.Join(sockDir, "devc.sock")
+
+	// Ensure the socket directory is writable by the current user.
+	// Docker Compose can create bind-mount source directories as root,
+	// making them unwritable by the current user.
+	if err := syscall.Access(sockDir, 0x2 /* W_OK */); err != nil {
+		if rmErr := os.RemoveAll(sockDir); rmErr != nil {
+			return nil, fmt.Errorf("daemon socket dir %s is not writable (owned by another user); run: sudo rm -rf %s", sockDir, sockDir)
+		}
+		if err := os.MkdirAll(sockDir, 0o755); err != nil {
+			return nil, fmt.Errorf("recreate daemon socket dir: %w", err)
+		}
+	}
 
 	// Clean up stale socket
 	_ = os.Remove(sockPath)

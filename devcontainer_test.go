@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -123,9 +124,49 @@ func TestResolvePort(t *testing.T) {
 	})
 }
 
+func TestResolveWorkspace_UniqueID(t *testing.T) {
+	// Two directories with the same basename but different parents
+	// must produce different IDs.
+	dirA := filepath.Join(t.TempDir(), "app")
+	dirB := filepath.Join(t.TempDir(), "app")
+	if err := os.MkdirAll(dirA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dirB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	wsA, err := resolveWorkspace(dirA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsB, err := resolveWorkspace(dirB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both should have the same name
+	if wsA.name != wsB.name {
+		t.Fatalf("names should match: %q vs %q", wsA.name, wsB.name)
+	}
+	if wsA.name != "app" {
+		t.Fatalf("name = %q, want %q", wsA.name, "app")
+	}
+
+	// IDs must differ
+	if wsA.id == wsB.id {
+		t.Fatalf("IDs should differ for different paths, both got %q", wsA.id)
+	}
+
+	// IDs should start with the basename
+	if !strings.HasPrefix(wsA.id, "app-") {
+		t.Fatalf("id %q should start with 'app-'", wsA.id)
+	}
+}
+
 func TestComposeFiles(t *testing.T) {
 	tmpDir := t.TempDir()
-	ws := workspace{dir: tmpDir, name: "test"}
+	ws := workspace{dir: tmpDir, name: "test", id: "test"}
 	dcDir := filepath.Join(tmpDir, ".devcontainer")
 	if err := os.MkdirAll(dcDir, 0o755); err != nil {
 		t.Fatal(err)

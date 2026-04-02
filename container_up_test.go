@@ -9,7 +9,7 @@ import (
 
 func TestBuildContainerMounts(t *testing.T) {
 	tmpDir := t.TempDir()
-	ws := workspace{dir: tmpDir, name: "project"}
+	ws := workspace{dir: tmpDir, name: "project", id: "project"}
 	wsFolder := "/workspaces/project"
 
 	// Create a real directory for the host mount so os.Stat succeeds

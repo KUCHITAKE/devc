@@ -16,7 +16,8 @@ func writeDevcontainerJSON(t *testing.T, dir, content string) workspace {
 	if err := os.WriteFile(filepath.Join(dcDir, "devcontainer.json"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return workspace{dir: dir, name: filepath.Base(dir)}
+	name := filepath.Base(dir)
+	return workspace{dir: dir, name: name, id: name}
 }
 
 func TestParseDevcontainerConfig_MinimalImage(t *testing.T) {

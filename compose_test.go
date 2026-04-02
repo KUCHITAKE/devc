@@ -12,7 +12,7 @@ func TestParseComposeConfig_ServiceRequired(t *testing.T) {
 	raw := map[string]json.RawMessage{
 		"dockerComposeFile": json.RawMessage(`"docker-compose.yml"`),
 	}
-	ws := workspace{dir: "/tmp/test", name: "test"}
+	ws := workspace{dir: "/tmp/test", name: "test", id: "test"}
 	_, err := parseComposeConfig(ws, raw)
 	if err == nil {
 		t.Fatal("expected error for missing service")
@@ -27,7 +27,7 @@ func TestParseComposeConfig_Defaults(t *testing.T) {
 		"dockerComposeFile": json.RawMessage(`"docker-compose.yml"`),
 		"service":           json.RawMessage(`"app"`),
 	}
-	ws := workspace{dir: "/tmp/test", name: "test"}
+	ws := workspace{dir: "/tmp/test", name: "test", id: "test"}
 	cc, err := parseComposeConfig(ws, raw)
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestParseComposeConfig_AllFields(t *testing.T) {
 		"runServices":       json.RawMessage(`["web", "db", "redis"]`),
 		"overrideCommand":   json.RawMessage(`false`),
 	}
-	ws := workspace{dir: "/tmp/test", name: "test"}
+	ws := workspace{dir: "/tmp/test", name: "test", id: "test"}
 	cc, err := parseComposeConfig(ws, raw)
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +76,7 @@ func TestWriteComposeOverride_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ws := workspace{dir: dir, name: "myproject"}
+	ws := workspace{dir: dir, name: "myproject", id: "myproject"}
 	cc := &composeConfig{
 		Service:         "app",
 		OverrideCommand: true,
@@ -139,7 +139,7 @@ func TestWriteComposeOverride_NoOverrideCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ws := workspace{dir: dir, name: "myproject"}
+	ws := workspace{dir: dir, name: "myproject", id: "myproject"}
 	cc := &composeConfig{
 		Service:         "app",
 		OverrideCommand: false,
@@ -169,7 +169,7 @@ func TestWriteComposeOverride_NoPorts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ws := workspace{dir: dir, name: "myproject"}
+	ws := workspace{dir: dir, name: "myproject", id: "myproject"}
 	cc := &composeConfig{
 		Service:         "app",
 		OverrideCommand: true,
@@ -199,7 +199,7 @@ func TestWriteComposeOverride_ContainerEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ws := workspace{dir: dir, name: "myproject"}
+	ws := workspace{dir: dir, name: "myproject", id: "myproject"}
 	cc := &composeConfig{
 		Service:         "app",
 		OverrideCommand: true,
@@ -233,9 +233,9 @@ func TestWriteComposeOverride_ContainerEnv(t *testing.T) {
 }
 
 func TestComposeProject(t *testing.T) {
-	ws := workspace{dir: "/home/user/projects/myapp", name: "myapp"}
+	ws := workspace{dir: "/home/user/projects/myapp", name: "myapp", id: "myapp-abc12345"}
 	got := composeProject(ws)
-	want := "myapp_devcontainer"
+	want := "myapp-abc12345_devcontainer"
 	if got != want {
 		t.Fatalf("composeProject() = %q, want %q", got, want)
 	}

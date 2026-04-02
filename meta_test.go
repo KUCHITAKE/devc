@@ -7,7 +7,7 @@ import (
 )
 
 func TestBuildContainerMeta(t *testing.T) {
-	ws := workspace{dir: "/home/user/myproject", name: "myproject"}
+	ws := workspace{dir: "/home/user/myproject", name: "myproject", id: "myproject-abc12345"}
 	cfg := &devcontainerConfig{
 		RemoteUser:            "vscode",
 		RemoteWorkspaceFolder: "/workspaces/myproject",

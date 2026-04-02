@@ -156,7 +156,7 @@ func buildFeatureImage(ctx context.Context, ws workspace, cfg *devcontainerConfi
 		return "", fmt.Errorf("no image or build.dockerfile specified")
 	}
 
-	imageTag := computeImageTag(ws.name, baseImage, allFeatures)
+	imageTag := computeImageTag(ws.id, baseImage, allFeatures)
 
 	// Check if image already exists locally (cache hit)
 	cli, err := getDockerClient()
@@ -278,7 +278,7 @@ func buildUserDockerfile(ctx context.Context, ws workspace, cfg *devcontainerCon
 		return "", fmt.Errorf("create build context: %w", err)
 	}
 
-	intermediateTag := fmt.Sprintf("devc-%s-intermediate:%s", ws.name, "latest")
+	intermediateTag := fmt.Sprintf("devc-%s-intermediate:%s", ws.id, "latest")
 
 	buildOpts := build.ImageBuildOptions{
 		Tags:        []string{intermediateTag},

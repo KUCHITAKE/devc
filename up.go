@@ -145,10 +145,10 @@ func runUp(dir string, opts upOptions) error {
 		allFeatures := mergeFeatures(ucfg.Features, cfg.Features)
 		baseImage := cfg.Image
 		if cfg.Build != nil && cfg.Build.Dockerfile != "" {
-			baseImage = fmt.Sprintf("devc-%s-intermediate:latest", ws.name)
+			baseImage = fmt.Sprintf("devc-%s-intermediate:latest", ws.id)
 		}
 		if baseImage != "" {
-			tag := computeImageTag(ws.name, baseImage, allFeatures)
+			tag := computeImageTag(ws.id, baseImage, allFeatures)
 			cli, cliErr := getDockerClient()
 			if cliErr == nil {
 				_, _ = cli.ImageRemove(ctx, tag, image.RemoveOptions{Force: true})
@@ -172,7 +172,7 @@ func runUp(dir string, opts upOptions) error {
 	printDone("Image built", imageTag)
 
 	// 11. Create and start container
-	containerID, err = createAndStartContainer(ctx, ws, cfg, imageTag, resolvedPorts, buildHostMounts(ucfg, ws.name))
+	containerID, err = createAndStartContainer(ctx, ws, cfg, imageTag, resolvedPorts, buildHostMounts(ucfg, ws.id))
 	if err != nil {
 		return fmt.Errorf("container create: %w", err)
 	}
@@ -180,7 +180,7 @@ func runUp(dir string, opts upOptions) error {
 	// 12. Inject devc binary and metadata into container
 	allFeatures := mergeFeatures(ucfg.Features, cfg.Features)
 	meta := buildContainerMeta(ws, cfg, resolvedPorts, allFeatures, ucfg.Dotfiles, "image", imageTag)
-	if err := injectDevcIntoContainer(ctx, containerID, ws.name, meta); err != nil {
+	if err := injectDevcIntoContainer(ctx, containerID, ws.id, meta); err != nil {
 		printWarn("devc injection failed", err.Error())
 	}
 
@@ -208,7 +208,7 @@ func runUp(dir string, opts upOptions) error {
 
 // enterContainer starts the daemon, runs an interactive shell, and handles rebuild requests.
 func enterContainer(ctx context.Context, ws workspace, containerID, remoteUser, workspaceFolder string) error {
-	sockDir := daemonSockDir(ws.name)
+	sockDir := daemonSockDir(ws.id)
 	d, err := startDaemon(ctx, containerID, sockDir)
 	if err != nil {
 		printWarn("Daemon start failed", err.Error())
@@ -217,7 +217,7 @@ func enterContainer(ctx context.Context, ws workspace, containerID, remoteUser, 
 	}
 
 	printDone("Ready", "")
-	printProgress("Entering container", remoteUser+"@devc-"+ws.name)
+	printProgress("Entering container", remoteUser+"@devc-"+ws.id)
 	exitCode, err := containerExecInteractive(ctx, containerID, remoteUser, workspaceFolder, []string{"bash", "-l"})
 	if err != nil {
 		return fmt.Errorf("interactive exec failed: %w", err)

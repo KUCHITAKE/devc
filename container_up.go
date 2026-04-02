@@ -148,7 +148,7 @@ func createAndStartContainer(ctx context.Context, ws workspace, cfg *devcontaine
 		PortBindings: portMap,
 	}
 
-	name := "devc-" + ws.name
+	name := "devc-" + ws.id
 
 	resp, err := cli.ContainerCreate(ctx, containerCfg, hostCfg, &network.NetworkingConfig{}, nil, name)
 	if err != nil {

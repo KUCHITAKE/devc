@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -12,7 +13,8 @@ import (
 
 type workspace struct {
 	dir  string
-	name string
+	name string // directory basename (for display and workspace folder)
+	id   string // unique identifier: {basename}-{hash(abs_path)[:8]}
 }
 
 type devcontainerConfig struct {
@@ -92,7 +94,9 @@ func resolveWorkspace(dir string) (workspace, error) {
 	if err != nil {
 		return workspace{}, fmt.Errorf("resolve workspace: %w", err)
 	}
-	return workspace{dir: abs, name: filepath.Base(abs)}, nil
+	name := filepath.Base(abs)
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(abs)))[:8]
+	return workspace{dir: abs, name: name, id: name + "-" + hash}, nil
 }
 
 func ensureDevcontainerJSON(ws workspace) error {
