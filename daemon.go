@@ -38,6 +38,7 @@ type daemon struct {
 	mu          sync.Mutex
 	forwards    []portForward
 	rebuildReq  bool
+	autoForwards map[string]bool // container ports already auto-forwarded or statically bound
 }
 
 type portForward struct {
@@ -81,9 +82,10 @@ func startDaemon(ctx context.Context, containerID string, sockDir string) (*daem
 	_ = os.Chmod(sockPath, 0o777)
 
 	d := &daemon{
-		listener:    listener,
-		sockPath:    sockPath,
-		containerID: containerID,
+		listener:     listener,
+		sockPath:     sockPath,
+		containerID:  containerID,
+		autoForwards: make(map[string]bool),
 	}
 
 	go d.serve(ctx)

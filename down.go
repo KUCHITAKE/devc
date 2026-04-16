@@ -40,8 +40,8 @@ func runDown(dir string) error {
 	if len(files) > 0 {
 		project := composeProject(ws)
 		printProgress("Stopping containers", project)
-		if err := composeExec(ctx, files, project, "down"); err != nil {
-			return fmt.Errorf("compose down failed: %w", err)
+		if err := composeExec(ctx, files, project, "stop"); err != nil {
+			return fmt.Errorf("compose stop failed: %w", err)
 		}
 	} else {
 		containerID, err := findContainerByWorkspace(ws)

@@ -285,7 +285,8 @@ func installFeaturesRuntime(ctx context.Context, containerID string, features ma
 		}()
 
 		if installErr != nil {
-			printWarn("Feature install failed", fmt.Sprintf("%s: %v", fr.ID, installErr))
+			printWarn("Feature install failed", fr.ID)
+			fmt.Fprintln(os.Stderr, installErr)
 		} else {
 			printDone("Installed feature", fr.ID)
 		}
@@ -308,6 +309,13 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 		} else {
 			// Stopped — restart
 			printProgress("Restarting services", project)
+
+			// Ensure daemon socket directory exists (may be lost after host reboot)
+			sockDir := daemonSockDir(ws.id)
+			if err := os.MkdirAll(sockDir, 0o755); err != nil {
+				return fmt.Errorf("create daemon socket dir: %w", err)
+			}
+
 			if err := composeExec(ctx, cc.Files, project, "start"); err != nil {
 				return fmt.Errorf("compose start: %w", err)
 			}
@@ -323,6 +331,14 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 			}
 		}
 
+		// Ensure devc binary is present (may be lost if /tmp was cleaned)
+		if err := ensureDevcBinary(ws.id); err != nil {
+			printWarn("devc binary restore failed", err.Error())
+		}
+
+		// Resolve remote user (fall back to root if user doesn't exist)
+		cfg.RemoteUser = resolveRemoteUser(ctx, containerID, cfg.RemoteUser)
+
 		// Setup and enter
 		if err := runWithSpinner("Setting up container", "", func() error {
 			if err := setupContainer(containerID, cfg.RemoteUser, ucfg.Dotfiles); err != nil {
@@ -333,7 +349,7 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 			return err
 		}
 
-		return enterContainer(ctx, ws, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder)
+		return enterContainer(ctx, ws, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder, nil)
 	}
 
 	// 2. Rebuild: tear down existing
@@ -378,19 +394,22 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 	}
 	printDone("Container ready", containerID[:12])
 
-	// 7. Install features at runtime (compose can't bake them into the image)
+	// 7. Resolve remote user (fall back to root if user doesn't exist)
+	cfg.RemoteUser = resolveRemoteUser(ctx, containerID, cfg.RemoteUser)
+
+	// 8. Install features at runtime (compose can't bake them into the image)
 	allFeatures := mergeFeatures(ucfg.Features, cfg.Features)
 	if err := installFeaturesRuntime(ctx, containerID, allFeatures); err != nil {
 		printWarn("Feature installation had errors", err.Error())
 	}
 
-	// 8. Inject devc binary and metadata
+	// 9. Inject devc binary and metadata
 	meta := buildContainerMeta(ws, cfg, resolvedPorts, allFeatures, ucfg.Dotfiles, "compose", "")
 	if err := injectDevcIntoContainer(ctx, containerID, ws.id, meta); err != nil {
 		printWarn("devc injection failed", err.Error())
 	}
 
-	// 9. Lifecycle hooks
+	// 10. Lifecycle hooks
 	onCreateHooks := parseLifecycleHook(cfg.OnCreateCommand)
 	postCreateHooks := parseLifecycleHook(cfg.PostCreateCommand)
 	postStartHooks := parseLifecycleHook(cfg.PostStartCommand)
@@ -398,7 +417,7 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 		printWarn("Lifecycle hooks had errors", err.Error())
 	}
 
-	// 10. Setup container
+	// 11. Setup container
 	if err := runWithSpinner("Setting up container", "", func() error {
 		if err := setupContainer(containerID, cfg.RemoteUser, ucfg.Dotfiles); err != nil {
 			printWarn("Container setup had errors", err.Error())
@@ -408,6 +427,6 @@ func runUpCompose(ctx context.Context, ws workspace, cfg *devcontainerConfig, cc
 		return err
 	}
 
-	// 11. Enter container
-	return enterContainer(ctx, ws, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder)
+	// 12. Enter container
+	return enterContainer(ctx, ws, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder, resolvedPorts)
 }

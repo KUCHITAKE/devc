@@ -125,11 +125,10 @@ func copyExecutable(dst string) error {
 	return err
 }
 
-// addDevcToPath adds /opt/devc/bin to PATH via /etc/profile.d/devc.sh.
+// addDevcToPath makes the devc binary discoverable inside the container by
+// creating a symlink at /usr/local/bin/devc → /opt/devc/bin/devc.
+// This works regardless of shell type or /etc/profile.d support.
 func addDevcToPath(ctx context.Context, containerID string) error {
-	script := `#!/bin/sh
-export PATH="/opt/devc/bin:$PATH"
-`
 	cli, err := getDockerClient()
 	if err != nil {
 		return err
@@ -138,20 +137,32 @@ export PATH="/opt/devc/bin:$PATH"
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	if err := tw.WriteHeader(&tar.Header{
-		Name: "devc.sh",
-		Mode: 0o644,
-		Size: int64(len(script)),
+		Typeflag: tar.TypeSymlink,
+		Name:     "devc",
+		Linkname: devcBinPath, // /opt/devc/bin/devc
+		Mode:     0o777,
 	}); err != nil {
-		return err
-	}
-	if _, err := tw.Write([]byte(script)); err != nil {
 		return err
 	}
 	if err := tw.Close(); err != nil {
 		return err
 	}
 
-	return cli.CopyToContainer(ctx, containerID, "/etc/profile.d/", &buf, container.CopyToContainerOptions{})
+	return cli.CopyToContainer(ctx, containerID, "/usr/local/bin/", &buf, container.CopyToContainerOptions{})
+}
+
+// ensureDevcBinary ensures the devc binary exists in the daemon socket directory.
+// Called on container restart to handle /tmp cleanup between stops.
+func ensureDevcBinary(wsID string) error {
+	sockDir := daemonSockDir(wsID)
+	binPath := filepath.Join(sockDir, "bin", "devc")
+	if _, err := os.Stat(binPath); err == nil {
+		return nil // binary already present
+	}
+	if err := os.MkdirAll(filepath.Join(sockDir, "bin"), 0o755); err != nil {
+		return fmt.Errorf("create bin dir: %w", err)
+	}
+	return copyExecutable(binPath)
 }
 
 // loadContainerMeta reads meta.json from /opt/devc/meta.json (inside container).

@@ -44,7 +44,6 @@ func parseDevcontainerConfig(ws workspace) (*devcontainerConfig, error) {
 	}
 
 	cfg := &devcontainerConfig{
-		RemoteUser:            "vscode",
 		RemoteWorkspaceFolder: "/workspaces/" + ws.name,
 		Raw:                   raw,
 	}

@@ -1,62 +1,100 @@
 # devc
 
-devcontainer をDocker Engine API で直接起動・管理するCLI。devcontainer CLI や Node.js は不要。
+A lightweight CLI that launches and manages [devcontainers](https://containers.dev/) using the Docker Engine API directly. No Node.js, no VS Code — just a single binary and Docker.
 
-image ベースと Docker Compose ベースの両方に対応。ユーザー固有の features、dotfiles、マウントは `~/.config/devc/config.json` で設定する。
+## Why devc?
 
-## インストール
+The official devcontainer CLI requires Node.js and npm. devc is a standalone Go binary (~12MB) that talks to Docker directly.
+
+- **Zero runtime dependencies** — Docker is all you need
+- **User-level config** — Global features, dotfiles, and mounts shared across all projects
+- **In-container CLI** — Forward ports, run host commands, and trigger rebuilds from inside the container
+- **Full devcontainer.json support** — Image, Dockerfile, and Docker Compose modes with OCI features
+
+## Installation
+
+### From release
 
 ```bash
-# リリースバイナリから
 gh release download --repo KUCHITAKE/devc -p 'devc_*_linux_amd64.tar.gz'
 tar xzf devc_*.tar.gz && install -Dm755 devc ~/.local/bin/devc
-
-# ソースから
-git clone https://github.com/KUCHITAKE/devc.git && cd devc
-make install
 ```
 
-## 使い方
+Binaries are available for `linux/amd64`, `linux/arm64`, `darwin/amd64`, and `darwin/arm64`.
+
+### From source
 
 ```bash
-devc ~/project                           # コンテナ起動 & 入る
-devc up -p 3000:3000 -p 5173 ~/project   # ポート指定付き
-devc rebuild ~/project                   # リビルドして入る
-devc down ~/project                      # 停止 (volumes 保持)
-devc clean ~/project                     # コンテナ & volumes 削除
+git clone https://github.com/KUCHITAKE/devc.git && cd devc
+make install  # builds in Docker, installs to ~/.local/bin/devc
 ```
 
-## サブコマンド
+## Usage
 
-| コマンド | 説明 |
-|----------|------|
-| `up [flags] [dir]` | コンテナ起動 & 入る (デフォルト) |
-| `down [dir]` | 停止 (volumes 保持) |
-| `clean [dir]` | コンテナ & volumes 削除 |
-| `rebuild [dir]` | リビルドして入る (`up --rebuild` のエイリアス) |
+```bash
+devc ~/project                           # start container & attach
+devc up -p 3000:3000 -p 5173 ~/project   # with port forwarding
+devc rebuild ~/project                   # rebuild from scratch
+devc down ~/project                      # stop (volumes preserved)
+devc clean ~/project                     # remove container & volumes
+```
 
-### `up` のフラグ
+### Commands
 
-| フラグ | 説明 |
-|--------|------|
-| `-p, --publish` | ポート公開 (例: `-p 3000:3000`)。繰り返し指定可 |
-| `--rebuild` | コンテナをゼロからリビルド |
+| Command | Description |
+|---------|-------------|
+| `up [flags] [dir]` | Start container and attach (default) |
+| `down [dir]` | Stop container, keep volumes |
+| `clean [dir]` | Remove container and volumes |
+| `rebuild [dir]` | Alias for `up --rebuild` |
 
-## 対応する devcontainer.json
+### `up` flags
 
-### image ベース
+| Flag | Description |
+|------|-------------|
+| `-p, --publish` | Publish ports (e.g., `-p 3000:3000`). Repeatable |
+| `--rebuild` | Force rebuild, discard cached image |
 
+### Port resolution
+
+Ports are collected from multiple sources (CLI flags take precedence):
+
+1. `-p` flags
+2. `forwardPorts` in devcontainer.json
+3. `appPort` in devcontainer.json
+
+Bare ports (e.g., `3000`) auto-detect an available host port, incrementing if the preferred port is in use.
+
+## In-container commands
+
+When inside a devc container, the `devc` binary is available with a different set of commands:
+
+| Command | Description |
+|---------|-------------|
+| `devc info` | Show container metadata (project, image, ports, features) |
+| `devc env` | Show injected environment variables |
+| `devc port <port>` | Forward a port dynamically (e.g., `devc port 8080`) |
+| `devc host <cmd>` | Execute a command on the host machine |
+| `devc dotfiles sync` | Re-sync dotfile symlinks |
+| `devc rebuild` | Request a rebuild on next exit |
+
+## Configuration
+
+### devcontainer.json
+
+devc supports all three devcontainer modes:
+
+**Image-based:**
 ```jsonc
 {
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
-  "features": { ... },
+  "features": { "ghcr.io/devcontainers/features/go:1": {} },
   "forwardPorts": [3000],
   "remoteUser": "vscode"
 }
 ```
 
-### build.dockerfile ベース
-
+**Custom Dockerfile:**
 ```jsonc
 {
   "build": {
@@ -68,35 +106,36 @@ devc clean ~/project                     # コンテナ & volumes 削除
 }
 ```
 
-### Docker Compose ベース
-
+**Docker Compose:**
 ```jsonc
 {
-  "dockerComposeFile": "docker-compose.yml",   // string | string[]
-  "service": "app",                             // 必須: メインサービス名
-  "runServices": ["app", "db"],                 // 省略可: 起動するサービス (省略時は全サービス)
-  "overrideCommand": true                       // 省略可: デフォルト true → sleep infinity 注入
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "runServices": ["app", "db"],
+  "overrideCommand": true
 }
 ```
 
-Compose モードでは `docker compose` CLI (v2) を使用。features はランタイムインストールされる。
+### Lifecycle hooks
 
-## ユーザー設定
+The following devcontainer.json lifecycle hooks are supported (string, array, and object forms):
 
-`~/.config/devc/config.json` でユーザー固有の設定を行う:
+- `onCreateCommand` — runs on first container creation
+- `postCreateCommand` — runs after creation
+- `postStartCommand` — runs on every start (including restarts)
+
+### User config (`~/.config/devc/config.json`)
+
+User-level settings that apply to all projects:
 
 ```json
 {
   "features": {
     "ghcr.io/duduribeiro/devcontainer-features/neovim:1": { "version": "nightly" },
-    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
-    "ghcr.io/jungaretti/features/ripgrep:1": {},
     "ghcr.io/devcontainers/features/github-cli:1": {}
   },
   "dotfiles": [
     "~/.config/nvim",
-    "~/.claude",
-    "~/.claude.json",
     "~/.ssh"
   ],
   "mounts": [
@@ -105,49 +144,36 @@ Compose モードでは `docker compose` CLI (v2) を使用。features はラン
 }
 ```
 
-- **features**: 全プロジェクト共通で注入する OCI features (プロジェクト側の features が優先)
-- **dotfiles**: コンテナ内の `/opt/devc-dotfiles/` にマウントされ、シンボリックリンクで配置される
-- **mounts**: 追加のバインドマウント
+- **features** — OCI features injected into every container (project-level features take precedence on conflict)
+- **dotfiles** — Paths mounted into the container and symlinked into the user's home directory
+- **mounts** — Additional bind mounts
 
-Git の `user.name` / `user.email` と `gh auth token` は自動的にコンテナに引き継がれる。
+Git credentials (`user.name`, `user.email`) and GitHub CLI tokens (`gh auth token`) are automatically forwarded to the container.
 
-## ライフサイクルフック
+## Security
 
-devcontainer.json の以下のフックに対応:
+devc runs a Unix socket daemon on the host (`/tmp/devc-daemon-{id}/devc.sock`) that is mounted into the container. This daemon enables:
 
-- `onCreateCommand` — コンテナ初回作成時
-- `postCreateCommand` — コンテナ作成後
-- `postStartCommand` — コンテナ起動時 (再起動含む)
+- **Dynamic port forwarding** from inside the container
+- **Host command execution** via `devc host <cmd>`
+- **Rebuild requests** via `devc rebuild`
 
-string、配列、オブジェクト形式いずれにも対応。
+The socket is only accessible from within the container that mounts it. This is an intentional design — devc containers can execute arbitrary commands on the host through this socket. This is equivalent to mounting the Docker socket, which many devcontainer setups already do.
 
-## ポート解決
+If you run untrusted code inside a devc container, be aware that it has host access through this mechanism.
 
-ポートは以下のソースから収集される (CLI フラグが優先):
+## Development
 
-1. `-p` フラグ
-2. `devcontainer.json` の `forwardPorts`
-3. `devcontainer.json` の `appPort`
-
-ベアポート (例: `3000`) はホスト側の空きポートを自動検出する。使用中の場合はインクリメントして空きを探す。
-
-## 開発
-
-Docker さえあれば開発できる。Go やリンターのインストールは不要。
+Only Docker is required to build and test. No local Go installation needed.
 
 ```bash
-make build            # バイナリビルド
-make test             # テスト実行
-make lint             # golangci-lint 実行
-make clean-cache      # Go モジュール・ビルドキャッシュを削除
+make build         # build binary in Docker
+make test          # run tests in Docker
+make lint          # run golangci-lint in Docker
+make install       # build & install to ~/.local/bin/devc
+make clean-cache   # remove Go module/build cache volumes
 ```
 
-## リリース
+## License
 
-```bash
-git tag vX.Y.Z
-git push origin vX.Y.Z
-# GitHub Actions が goreleaser でクロスビルド & リリース作成
-```
-
-ビルド対象: `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`
+[MIT](LICENSE)

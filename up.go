@@ -105,6 +105,13 @@ func runUp(dir string, opts upOptions) error {
 		} else {
 			// Stopped container — restart it
 			printProgress("Restarting container", containerID[:12])
+
+			// Ensure daemon socket directory exists (may be lost after host reboot)
+			sockDir := daemonSockDir(ws.id)
+			if err := os.MkdirAll(sockDir, 0o755); err != nil {
+				return fmt.Errorf("create daemon socket dir: %w", err)
+			}
+
 			cli, cliErr := getDockerClient()
 			if cliErr != nil {
 				return fmt.Errorf("docker client: %w", cliErr)
@@ -119,6 +126,14 @@ func runUp(dir string, opts upOptions) error {
 			}
 		}
 
+		// Ensure devc binary is present (may be lost if /tmp was cleaned)
+		if err := ensureDevcBinary(ws.id); err != nil {
+			printWarn("devc binary restore failed", err.Error())
+		}
+
+		// Resolve remote user (fall back to root if user doesn't exist)
+		cfg.RemoteUser = resolveRemoteUser(ctx, containerID, cfg.RemoteUser)
+
 		// Setup and enter
 		if err := runWithSpinner("Setting up container", "", func() error {
 			if err := setupContainer(containerID, cfg.RemoteUser, ucfg.Dotfiles); err != nil {
@@ -129,7 +144,7 @@ func runUp(dir string, opts upOptions) error {
 			return err
 		}
 
-		return enterContainer(ctx, ws, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder)
+		return enterContainer(ctx, ws, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder, nil)
 	}
 
 	// 8. Rebuild: remove existing container + cached image
@@ -177,14 +192,17 @@ func runUp(dir string, opts upOptions) error {
 		return fmt.Errorf("container create: %w", err)
 	}
 
-	// 12. Inject devc binary and metadata into container
+	// 12. Resolve remote user (fall back to root if user doesn't exist)
+	cfg.RemoteUser = resolveRemoteUser(ctx, containerID, cfg.RemoteUser)
+
+	// 13. Inject devc binary and metadata into container
 	allFeatures := mergeFeatures(ucfg.Features, cfg.Features)
 	meta := buildContainerMeta(ws, cfg, resolvedPorts, allFeatures, ucfg.Dotfiles, "image", imageTag)
 	if err := injectDevcIntoContainer(ctx, containerID, ws.id, meta); err != nil {
 		printWarn("devc injection failed", err.Error())
 	}
 
-	// 13. Lifecycle hooks
+	// 14. Lifecycle hooks
 	onCreateHooks := parseLifecycleHook(cfg.OnCreateCommand)
 	postCreateHooks := parseLifecycleHook(cfg.PostCreateCommand)
 	postStartHooks := parseLifecycleHook(cfg.PostStartCommand)
@@ -192,7 +210,7 @@ func runUp(dir string, opts upOptions) error {
 		printWarn("Lifecycle hooks had errors", err.Error())
 	}
 
-	// 14. Setup container with spinner
+	// 15. Setup container with spinner
 	if err := runWithSpinner("Setting up container", "", func() error {
 		if err := setupContainer(containerID, cfg.RemoteUser, ucfg.Dotfiles); err != nil {
 			printWarn("Container setup had errors", err.Error())
@@ -202,18 +220,22 @@ func runUp(dir string, opts upOptions) error {
 		return err
 	}
 
-	// 15. Enter container
-	return enterContainer(ctx, ws, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder)
+	// 16. Enter container
+	return enterContainer(ctx, ws, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder, resolvedPorts)
 }
 
 // enterContainer starts the daemon, runs an interactive shell, and handles rebuild requests.
-func enterContainer(ctx context.Context, ws workspace, containerID, remoteUser, workspaceFolder string) error {
+// staticPorts are ports already forwarded via Docker port bindings (host:container format);
+// auto port detection will skip these.
+func enterContainer(ctx context.Context, ws workspace, containerID, remoteUser, workspaceFolder string, staticPorts []string) error {
 	sockDir := daemonSockDir(ws.id)
 	d, err := startDaemon(ctx, containerID, sockDir)
 	if err != nil {
 		printWarn("Daemon start failed", err.Error())
 	} else {
 		defer d.Close()
+		d.setStaticPorts(staticPorts)
+		d.startAutoPortDetection(ctx)
 	}
 
 	printDone("Ready", "")

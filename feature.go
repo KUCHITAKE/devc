@@ -119,7 +119,8 @@ func pullFeature(ctx context.Context, ref featureRef) (*featureFiles, error) {
 	// 2. Get auth token
 	tokenURL := fmt.Sprintf("https://%s/token?service=%s&scope=repository:%s:pull",
 		ref.Registry, ref.Registry, ref.Repository)
-	token, err := fetchToken(ctx, tokenURL)
+	basic := registryBasicAuth(ref.Registry)
+	token, err := fetchToken(ctx, tokenURL, basic)
 	if err != nil {
 		return nil, fmt.Errorf("auth token: %w", err)
 	}
@@ -168,10 +169,36 @@ type ociDescriptor struct {
 	Size      int64  `json:"size"`
 }
 
-func fetchToken(ctx context.Context, url string) (string, error) {
+func registryBasicAuth(registry string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".docker", "config.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Auths map[string]struct {
+			Auth string `json:"auth"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	if entry, ok := cfg.Auths[registry]; ok && entry.Auth != "" {
+		return entry.Auth
+	}
+	return ""
+}
+
+func fetchToken(ctx context.Context, url, basicAuth string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", err
+	}
+	if basicAuth != "" {
+		req.Header.Set("Authorization", "Basic "+basicAuth)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

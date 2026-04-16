@@ -219,7 +219,7 @@ func TestPullFeature(t *testing.T) {
 
 	// Test token fetch
 	tokenURL := fmt.Sprintf("%s/token?service=%s&scope=repository:%s:pull", srv.URL, host, ref.Repository)
-	token, err := fetchToken(ctx, tokenURL)
+	token, err := fetchToken(ctx, tokenURL, "")
 	if err != nil {
 		t.Fatalf("fetchToken: %v", err)
 	}

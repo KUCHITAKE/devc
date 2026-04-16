@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -65,6 +66,82 @@ func findContainerByWorkspace(ws workspace) (string, error) {
 		return "", fmt.Errorf("no devcontainer found for %s", ws.dir)
 	}
 	return containers[0].ID, nil
+}
+
+// resolveRemoteUser determines the effective remote user for the container.
+//
+// If remoteUser is explicitly set (non-empty), it verifies the user exists
+// in the container and falls back to "root" with a warning if not.
+//
+// If remoteUser is empty (not specified in devcontainer.json), it uses the
+// container image's default USER, falling back to "root" if unset.
+// This matches the devcontainer spec behavior.
+func resolveRemoteUser(ctx context.Context, containerID, remoteUser string) string {
+	if remoteUser == "" {
+		// Use container's default user (from Dockerfile USER directive)
+		return containerDefaultUser(ctx, containerID)
+	}
+	if remoteUser == "root" {
+		return remoteUser
+	}
+	_, err := containerExecOutput(ctx, containerID, "root", []string{"id", "-u", remoteUser})
+	if err != nil {
+		printWarn("Remote user not found", fmt.Sprintf("%q does not exist in the container, falling back to root", remoteUser))
+		return "root"
+	}
+	return remoteUser
+}
+
+// containerDefaultUser returns the default user configured in the container image.
+// It checks the image's devcontainer.metadata label for remoteUser first (matching
+// the devcontainer spec), then falls back to the Dockerfile USER directive.
+// Falls back to "root" if no user is configured or on error.
+func containerDefaultUser(ctx context.Context, containerID string) string {
+	cli, err := getDockerClient()
+	if err != nil {
+		return "root"
+	}
+	info, err := cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return "root"
+	}
+
+	// Check devcontainer.metadata label for remoteUser (set by base images like
+	// mcr.microsoft.com/devcontainers/* which don't use Dockerfile USER directive).
+	if metadata, ok := info.Config.Labels["devcontainer.metadata"]; ok {
+		if u := remoteUserFromMetadata(metadata); u != "" {
+			return u
+		}
+	}
+
+	user := info.Config.User
+	if user == "" {
+		return "root"
+	}
+	// Config.User can be "uid:gid" — extract the user part
+	if i := strings.Index(user, ":"); i >= 0 {
+		user = user[:i]
+	}
+	return user
+}
+
+// remoteUserFromMetadata extracts remoteUser from a devcontainer.metadata JSON label.
+// The label value is a JSON array of objects; the last non-empty remoteUser wins.
+func remoteUserFromMetadata(metadata string) string {
+	var entries []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(metadata), &entries); err != nil {
+		return ""
+	}
+	var user string
+	for _, entry := range entries {
+		if v, ok := entry["remoteUser"]; ok {
+			var u string
+			if err := json.Unmarshal(v, &u); err == nil && u != "" {
+				user = u
+			}
+		}
+	}
+	return user
 }
 
 func setupContainer(containerID, remoteUser string, dotfiles []string) error {

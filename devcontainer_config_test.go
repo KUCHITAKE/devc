@@ -37,8 +37,8 @@ func TestParseDevcontainerConfig_RemoteUserDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.RemoteUser != "vscode" {
-		t.Fatalf("RemoteUser = %q, want %q", cfg.RemoteUser, "vscode")
+	if cfg.RemoteUser != "" {
+		t.Fatalf("RemoteUser = %q, want empty (resolved at runtime from container)", cfg.RemoteUser)
 	}
 }
 
