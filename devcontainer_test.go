@@ -215,4 +215,3 @@ func TestComposeFiles(t *testing.T) {
 		})
 	}
 }
-

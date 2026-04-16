@@ -19,8 +19,8 @@ const devcSockPath = "/opt/devc/devc.sock"
 // daemonRequest is the JSON request sent from the in-container devc to the host daemon.
 type daemonRequest struct {
 	Type    string   `json:"type"`              // "port", "host", "rebuild"
-	Port    string   `json:"port,omitempty"`     // for "port": e.g. "8080" or "8080:3000"
-	Command []string `json:"command,omitempty"`  // for "host": command to execute
+	Port    string   `json:"port,omitempty"`    // for "port": e.g. "8080" or "8080:3000"
+	Command []string `json:"command,omitempty"` // for "host": command to execute
 }
 
 // daemonResponse is the JSON response sent back to the in-container devc.
@@ -32,12 +32,12 @@ type daemonResponse struct {
 
 // daemon manages the Unix socket listener and active port forwards.
 type daemon struct {
-	listener    net.Listener
-	sockPath    string
-	containerID string
-	mu          sync.Mutex
-	forwards    []portForward
-	rebuildReq  bool
+	listener     net.Listener
+	sockPath     string
+	containerID  string
+	mu           sync.Mutex
+	forwards     []portForward
+	rebuildReq   bool
 	autoForwards map[string]bool // container ports already auto-forwarded or statically bound
 }
 

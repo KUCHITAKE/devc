@@ -15,9 +15,9 @@ import (
 // buildInternalRootCmd returns the command tree for container-internal usage.
 func buildInternalRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "devc <command>",
-		Short: "devc container utilities",
-		Long:  "Utilities available inside a devc-managed container.",
+		Use:           "devc <command>",
+		Short:         "devc container utilities",
+		Long:          "Utilities available inside a devc-managed container.",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,

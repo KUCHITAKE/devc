@@ -14,13 +14,13 @@ import (
 
 func TestParseFeatureRef(t *testing.T) {
 	tests := []struct {
-		name       string
-		ref        string
-		wantReg    string
-		wantRepo   string
-		wantTag    string
-		wantID     string
-		wantErr    bool
+		name     string
+		ref      string
+		wantReg  string
+		wantRepo string
+		wantTag  string
+		wantID   string
+		wantErr  bool
 	}{
 		{
 			name:     "github-cli",
@@ -115,7 +115,7 @@ func createTestTgz(t *testing.T, files map[string]string) []byte {
 
 func TestExtractFeatureTar(t *testing.T) {
 	tgz := createTestTgz(t, map[string]string{
-		"install.sh":          "#!/bin/bash\necho hello",
+		"install.sh":                "#!/bin/bash\necho hello",
 		"devcontainer-feature.json": `{"id": "test"}`,
 	})
 	files, err := extractFeatureTar(tgz)

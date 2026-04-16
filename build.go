@@ -439,7 +439,10 @@ func mergeFeatures(userFeatures, projectFeatures map[string]map[string]interface
 }
 
 // readTarContents is a test helper to read all files from a tar reader.
-func readTarContents(t interface{ Helper(); Fatal(...interface{}) }, r io.Reader) map[string][]byte {
+func readTarContents(t interface {
+	Helper()
+	Fatal(...interface{})
+}, r io.Reader) map[string][]byte {
 	t.Helper()
 	tr := tar.NewReader(r)
 	contents := make(map[string][]byte)
