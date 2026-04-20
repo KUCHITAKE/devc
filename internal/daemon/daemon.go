@@ -1,0 +1,284 @@
+package daemon
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+
+	"github.com/closer/devc/internal/config"
+	"github.com/closer/devc/internal/docker"
+)
+
+const DevcSockPath = "/opt/devc/devc.sock"
+
+// Request is the JSON request sent from the in-container devc to the host daemon.
+type Request struct {
+	Type    string   `json:"type"`              // "port", "host", "rebuild"
+	Port    string   `json:"port,omitempty"`    // for "port": e.g. "8080" or "8080:3000"
+	Command []string `json:"command,omitempty"` // for "host": command to execute
+}
+
+// Response is the JSON response sent back to the in-container devc.
+type Response struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message,omitempty"`
+	Output  string `json:"output,omitempty"`
+}
+
+// Daemon manages the Unix socket listener and active port forwards.
+type Daemon struct {
+	listener     net.Listener
+	sockPath     string
+	containerID  string
+	mu           sync.Mutex
+	forwards     []portForward
+	rebuildReq   bool
+	autoForwards map[string]bool // container ports already auto-forwarded or statically bound
+}
+
+type portForward struct {
+	listener      net.Listener
+	hostPort      string
+	containerPort string
+}
+
+// SockDir returns the host directory for the daemon socket.
+// This directory is mounted into the container at /opt/devc/.
+func SockDir(wsName string) string {
+	return fmt.Sprintf("/tmp/devc-daemon-%s", wsName)
+}
+
+// Start creates a Unix socket in the daemon directory and starts listening.
+// The daemon directory must already exist and be mounted into the container.
+func Start(ctx context.Context, containerID string, sockDir string) (*Daemon, error) {
+	sockPath := filepath.Join(sockDir, "devc.sock")
+
+	// Ensure the socket directory is writable by the current user.
+	// Docker Compose can create bind-mount source directories as root,
+	// making them unwritable by the current user.
+	if err := syscall.Access(sockDir, 0x2 /* W_OK */); err != nil {
+		if rmErr := os.RemoveAll(sockDir); rmErr != nil {
+			return nil, fmt.Errorf("daemon socket dir %s is not writable (owned by another user); run: sudo rm -rf %s", sockDir, sockDir)
+		}
+		if err := os.MkdirAll(sockDir, 0o755); err != nil {
+			return nil, fmt.Errorf("recreate daemon socket dir: %w", err)
+		}
+	}
+
+	// Clean up stale socket
+	_ = os.Remove(sockPath)
+
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		return nil, fmt.Errorf("listen unix socket: %w", err)
+	}
+
+	// Make socket accessible to all users in the container
+	_ = os.Chmod(sockPath, 0o777)
+
+	d := &Daemon{
+		listener:     listener,
+		sockPath:     sockPath,
+		containerID:  containerID,
+		autoForwards: make(map[string]bool),
+	}
+
+	go d.serve(ctx)
+
+	return d, nil
+}
+
+func (d *Daemon) serve(ctx context.Context) {
+	for {
+		conn, err := d.listener.Accept()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				continue
+			}
+		}
+		go d.handleConn(ctx, conn)
+	}
+}
+
+func (d *Daemon) handleConn(ctx context.Context, conn net.Conn) {
+	defer func() { _ = conn.Close() }()
+
+	data, err := io.ReadAll(conn)
+	if err != nil {
+		return
+	}
+
+	var req Request
+	if err := json.Unmarshal(data, &req); err != nil {
+		writeResponse(conn, Response{OK: false, Message: "invalid request"})
+		return
+	}
+
+	var resp Response
+	switch req.Type {
+	case "port":
+		resp = d.HandlePort(ctx, req)
+	case "host":
+		resp = d.handleHost(req)
+	case "rebuild":
+		resp = d.handleRebuild()
+	default:
+		resp = Response{OK: false, Message: fmt.Sprintf("unknown request type: %s", req.Type)}
+	}
+
+	writeResponse(conn, resp)
+}
+
+func (d *Daemon) HandlePort(ctx context.Context, req Request) Response {
+	parts := strings.SplitN(req.Port, ":", 2)
+	var hostPort, containerPort string
+	if len(parts) == 2 {
+		hostPort = parts[0]
+		containerPort = parts[1]
+	} else {
+		hostPort = req.Port
+		containerPort = req.Port
+	}
+
+	// Find available host port
+	resolved := config.ResolvePort(hostPort + ":" + containerPort)
+	resolvedParts := strings.SplitN(resolved, ":", 2)
+	hostPort = resolvedParts[0]
+
+	// Get container IP
+	containerIP, err := GetContainerIP(ctx, d.containerID)
+	if err != nil {
+		return Response{OK: false, Message: fmt.Sprintf("get container IP: %v", err)}
+	}
+
+	// Start TCP proxy
+	ln, err := net.Listen("tcp", ":"+hostPort)
+	if err != nil {
+		return Response{OK: false, Message: fmt.Sprintf("listen on port %s: %v", hostPort, err)}
+	}
+
+	fwd := portForward{
+		listener:      ln,
+		hostPort:      hostPort,
+		containerPort: containerPort,
+	}
+
+	d.mu.Lock()
+	d.forwards = append(d.forwards, fwd)
+	d.mu.Unlock()
+
+	go ProxyTCP(ctx, ln, containerIP, containerPort)
+
+	msg := fmt.Sprintf("forwarding localhost:%s → container:%s", hostPort, containerPort)
+	return Response{OK: true, Message: msg}
+}
+
+func (d *Daemon) handleHost(req Request) Response {
+	if len(req.Command) == 0 {
+		return Response{OK: false, Message: "no command specified"}
+	}
+
+	cmd := exec.Command(req.Command[0], req.Command[1:]...) //nolint:gosec // intentional host command execution via authenticated socket
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return Response{OK: false, Message: err.Error(), Output: string(out)}
+	}
+	return Response{OK: true, Output: string(out)}
+}
+
+func (d *Daemon) handleRebuild() Response {
+	d.mu.Lock()
+	d.rebuildReq = true
+	d.mu.Unlock()
+	return Response{OK: true, Message: "rebuild requested — exit the container to trigger rebuild"}
+}
+
+// RebuildRequested returns true if a rebuild was requested from inside the container.
+func (d *Daemon) RebuildRequested() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.rebuildReq
+}
+
+// Close shuts down the daemon and cleans up resources.
+func (d *Daemon) Close() {
+	_ = d.listener.Close()
+	_ = os.Remove(d.sockPath)
+
+	d.mu.Lock()
+	for _, fwd := range d.forwards {
+		_ = fwd.listener.Close()
+	}
+	d.mu.Unlock()
+}
+
+// SockPath returns the host-side path to the Unix socket.
+func (d *Daemon) SockPath() string {
+	return d.sockPath
+}
+
+func writeResponse(conn net.Conn, resp Response) {
+	data, _ := json.Marshal(resp)
+	_, _ = conn.Write(data)
+}
+
+// GetContainerIP returns the IP address of a container on the default bridge network.
+func GetContainerIP(ctx context.Context, containerID string) (string, error) {
+	cli, err := docker.GetClient()
+	if err != nil {
+		return "", err
+	}
+	info, err := cli.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return "", err
+	}
+	if info.NetworkSettings == nil {
+		return "", fmt.Errorf("no network settings")
+	}
+	for _, nw := range info.NetworkSettings.Networks {
+		if nw.IPAddress != "" {
+			return nw.IPAddress, nil
+		}
+	}
+	return "", fmt.Errorf("no IP address found for container %s", containerID[:12])
+}
+
+// ProxyTCP accepts connections on ln and proxies them to target host:port.
+func ProxyTCP(ctx context.Context, ln net.Listener, targetHost, targetPort string) {
+	target := net.JoinHostPort(targetHost, targetPort)
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				return
+			}
+		}
+		go func(c net.Conn) {
+			defer func() { _ = c.Close() }()
+			remote, err := net.Dial("tcp", target)
+			if err != nil {
+				return
+			}
+			defer func() { _ = remote.Close() }()
+
+			done := make(chan struct{}, 2)
+			go func() { _, _ = io.Copy(remote, c); done <- struct{}{} }()
+			go func() { _, _ = io.Copy(c, remote); done <- struct{}{} }()
+			<-done
+		}(conn)
+	}
+}

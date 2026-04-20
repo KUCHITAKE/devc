@@ -10,7 +10,7 @@ DOCKER_RUN   := docker run --rm \
 
 build:
 	$(DOCKER_RUN) $(GO_IMAGE) \
-		go build -buildvcs=false -ldflags "-X main.version=$(VERSION)" -o devc .
+		go build -buildvcs=false -ldflags "-X main.version=$(VERSION)" -o devc ./cmd/devc
 
 lint:
 	$(DOCKER_RUN) $(LINT_IMAGE) \
