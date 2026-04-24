@@ -206,7 +206,7 @@ func Project(ws config.Workspace) string {
 // InstallFeaturesRuntime installs OCI features inside a running container.
 // Unlike the image-based flow (which bakes features into the image at build time),
 // this runs install.sh at runtime via exec — used for compose-based devcontainers.
-func InstallFeaturesRuntime(ctx context.Context, containerID string, features map[string]map[string]interface{}) error {
+func InstallFeaturesRuntime(ctx context.Context, containerID, wsDir string, features map[string]map[string]interface{}, rebuild bool) error {
 	if len(features) == 0 {
 		return nil
 	}
@@ -223,6 +223,13 @@ func InstallFeaturesRuntime(ctx context.Context, containerID string, features ma
 	}
 	sort.Strings(refs)
 
+	// Read lockfile (ignored on rebuild)
+	lockfilePath := build.LockfilePath(wsDir)
+	var lockfile *build.Lockfile
+	if !rebuild {
+		lockfile, _ = build.ReadLockfile(lockfilePath)
+	}
+
 	ui.PrintProgress("Installing features", fmt.Sprintf("%d features", len(features)))
 
 	// Ensure staging directory exists in the container
@@ -230,6 +237,7 @@ func InstallFeaturesRuntime(ctx context.Context, containerID string, features ma
 		return fmt.Errorf("create feature staging dir: %w", err)
 	}
 
+	newLock := &build.Lockfile{Features: make(map[string]build.FeatureLock)}
 	for _, ref := range refs {
 		opts := features[ref]
 		fr, err := build.ParseFeatureRef(ref)
@@ -241,16 +249,30 @@ func InstallFeaturesRuntime(ctx context.Context, containerID string, features ma
 		ui.PrintProgress("Installing feature", fr.ID)
 
 		installErr := func() error {
-			// Pull
-			files, pullErr := build.PullFeature(ctx, fr)
+			// Pull (use locked digest if available)
+			var result *build.PullResult
+			var pullErr error
+			if lockfile != nil {
+				if lock, ok := lockfile.Features[ref]; ok {
+					result, pullErr = build.PullFeatureByDigest(ctx, fr, lock.Resolved)
+				}
+			}
+			if result == nil && pullErr == nil {
+				result, pullErr = build.PullFeature(ctx, fr)
+			}
 			if pullErr != nil {
 				return fmt.Errorf("pull: %w", pullErr)
+			}
+
+			newLock.Features[ref] = build.FeatureLock{
+				Version:  fr.Tag,
+				Resolved: result.Digest,
 			}
 
 			// Create tar archive for CopyToContainer
 			var buf bytes.Buffer
 			tw := tar.NewWriter(&buf)
-			for name, data := range files.AllFiles {
+			for name, data := range result.Files.AllFiles {
 				if err := tw.WriteHeader(&tar.Header{
 					Name: fr.ID + "/" + name,
 					Mode: 0o755,
@@ -296,6 +318,15 @@ func InstallFeaturesRuntime(ctx context.Context, containerID string, features ma
 			fmt.Fprintln(os.Stderr, installErr)
 		} else {
 			ui.PrintDone("Installed feature", fr.ID)
+		}
+	}
+
+	// Write lockfile
+	if len(newLock.Features) > 0 {
+		if err := build.WriteLockfile(lockfilePath, newLock); err != nil {
+			ui.PrintWarn("Failed to write lockfile", err.Error())
+		} else {
+			ui.PrintDone("Lockfile updated", lockfilePath)
 		}
 	}
 
@@ -413,7 +444,7 @@ func RunUpCompose(ctx context.Context, ws config.Workspace, cfg *config.Devconta
 
 	// 8. Install features at runtime (compose can't bake them into the image)
 	allFeatures := build.MergeFeatures(ucfg.Features, cfg.Features)
-	if err := InstallFeaturesRuntime(ctx, containerID, allFeatures); err != nil {
+	if err := InstallFeaturesRuntime(ctx, containerID, ws.Dir, allFeatures, opts.Rebuild); err != nil {
 		ui.PrintWarn("Feature installation had errors", err.Error())
 	}
 

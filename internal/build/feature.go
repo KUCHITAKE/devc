@@ -112,11 +112,16 @@ func FeatureCacheDir() string {
 	return filepath.Join(home, ".cache", "devc", "features")
 }
 
-func PullFeature(ctx context.Context, ref FeatureRef) (*FeatureFiles, error) {
-	// 1. Check cache
+// PullResult holds the extracted feature files and the resolved OCI layer digest.
+type PullResult struct {
+	Files  *FeatureFiles
+	Digest string
+}
+
+func PullFeature(ctx context.Context, ref FeatureRef) (*PullResult, error) {
 	cacheDir := FeatureCacheDir()
 
-	// 2. Get auth token
+	// 1. Get auth token
 	tokenURL := fmt.Sprintf("https://%s/token?service=%s&scope=repository:%s:pull",
 		ref.Registry, ref.Registry, ref.Repository)
 	basic := registryBasicAuth(ref.Registry)
@@ -125,7 +130,7 @@ func PullFeature(ctx context.Context, ref FeatureRef) (*FeatureFiles, error) {
 		return nil, fmt.Errorf("auth token: %w", err)
 	}
 
-	// 3. Get manifest
+	// 2. Get manifest
 	manifestURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s",
 		ref.Registry, ref.Repository, ref.Tag)
 	manifest, err := fetchManifest(ctx, manifestURL, token)
@@ -141,10 +146,14 @@ func PullFeature(ctx context.Context, ref FeatureRef) (*FeatureFiles, error) {
 	cacheFile := filepath.Join(cacheDir, strings.ReplaceAll(layer.Digest, ":", "-")+".tgz")
 
 	if data, err := os.ReadFile(cacheFile); err == nil {
-		return ExtractFeatureTar(data)
+		files, err := ExtractFeatureTar(data)
+		if err != nil {
+			return nil, err
+		}
+		return &PullResult{Files: files, Digest: layer.Digest}, nil
 	}
 
-	// 4. Download blob
+	// 3. Download blob
 	blobURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s",
 		ref.Registry, ref.Repository, layer.Digest)
 	blobData, err := fetchBlob(ctx, blobURL, token)
@@ -156,7 +165,53 @@ func PullFeature(ctx context.Context, ref FeatureRef) (*FeatureFiles, error) {
 	_ = os.MkdirAll(cacheDir, 0o755)
 	_ = os.WriteFile(cacheFile, blobData, 0o644)
 
-	return ExtractFeatureTar(blobData)
+	files, err := ExtractFeatureTar(blobData)
+	if err != nil {
+		return nil, err
+	}
+	return &PullResult{Files: files, Digest: layer.Digest}, nil
+}
+
+// PullFeatureByDigest pulls a feature using a locked digest, skipping tag resolution.
+func PullFeatureByDigest(ctx context.Context, ref FeatureRef, digest string) (*PullResult, error) {
+	cacheDir := FeatureCacheDir()
+
+	// Check cache first
+	cacheFile := filepath.Join(cacheDir, strings.ReplaceAll(digest, ":", "-")+".tgz")
+	if data, err := os.ReadFile(cacheFile); err == nil {
+		files, err := ExtractFeatureTar(data)
+		if err != nil {
+			return nil, err
+		}
+		return &PullResult{Files: files, Digest: digest}, nil
+	}
+
+	// Get auth token
+	tokenURL := fmt.Sprintf("https://%s/token?service=%s&scope=repository:%s:pull",
+		ref.Registry, ref.Registry, ref.Repository)
+	basic := registryBasicAuth(ref.Registry)
+	token, err := fetchToken(ctx, tokenURL, basic)
+	if err != nil {
+		return nil, fmt.Errorf("auth token: %w", err)
+	}
+
+	// Download blob directly by digest
+	blobURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s",
+		ref.Registry, ref.Repository, digest)
+	blobData, err := fetchBlob(ctx, blobURL, token)
+	if err != nil {
+		return nil, fmt.Errorf("blob download: %w", err)
+	}
+
+	// Save to cache
+	_ = os.MkdirAll(cacheDir, 0o755)
+	_ = os.WriteFile(cacheFile, blobData, 0o644)
+
+	files, err := ExtractFeatureTar(blobData)
+	if err != nil {
+		return nil, err
+	}
+	return &PullResult{Files: files, Digest: digest}, nil
 }
 
 type ociManifest struct {

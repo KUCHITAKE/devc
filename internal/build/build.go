@@ -141,7 +141,7 @@ func PrepareBuildContext(dockerfile string, features []FeatureInstall) (io.Reade
 }
 
 func BuildFeatureImage(ctx context.Context, ws config.Workspace, cfg *config.DevcontainerConfig,
-	userFeatures map[string]map[string]interface{}) (string, error) {
+	userFeatures map[string]map[string]interface{}, rebuild bool) (string, error) {
 	// Merge user features with project features (project wins)
 	allFeatures := MergeFeatures(userFeatures, cfg.Features)
 
@@ -196,18 +196,34 @@ func BuildFeatureImage(ctx context.Context, ws config.Workspace, cfg *config.Dev
 		return imageTag, nil
 	}
 
+	// Read lockfile (ignored on rebuild)
+	lockfilePath := LockfilePath(ws.Dir)
+	var lockfile *Lockfile
+	if !rebuild {
+		lockfile, _ = ReadLockfile(lockfilePath)
+	}
+
 	// Pull features
 	ui.PrintProgress("Pulling features", fmt.Sprintf("%d features", len(allFeatures)))
 	var installs []FeatureInstall
+	newLock := &Lockfile{Features: make(map[string]FeatureLock)}
 	for ref, opts := range allFeatures {
 		fr, err := ParseFeatureRef(ref)
 		if err != nil {
 			return "", fmt.Errorf("parse feature ref %q: %w", ref, err)
 		}
-		var files *FeatureFiles
+		var result *PullResult
 		if err := ui.RunWithSpinner("Pulling feature", fr.ID, func() error {
 			var pullErr error
-			files, pullErr = PullFeature(ctx, fr)
+			// Use locked digest if available
+			if lockfile != nil {
+				if lock, ok := lockfile.Features[ref]; ok {
+					ui.PrintDone("Using locked digest", fr.ID)
+					result, pullErr = PullFeatureByDigest(ctx, fr, lock.Resolved)
+					return pullErr
+				}
+			}
+			result, pullErr = PullFeature(ctx, fr)
 			return pullErr
 		}); err != nil {
 			return "", fmt.Errorf("pull feature %q: %w", ref, err)
@@ -215,9 +231,20 @@ func BuildFeatureImage(ctx context.Context, ws config.Workspace, cfg *config.Dev
 		ui.PrintDone("Pulled feature", fr.ID)
 		installs = append(installs, FeatureInstall{
 			ID:      fr.ID,
-			Files:   files,
+			Files:   result.Files,
 			Options: opts,
 		})
+		newLock.Features[ref] = FeatureLock{
+			Version:  fr.Tag,
+			Resolved: result.Digest,
+		}
+	}
+
+	// Write lockfile
+	if err := WriteLockfile(lockfilePath, newLock); err != nil {
+		ui.PrintWarn("Failed to write lockfile", err.Error())
+	} else {
+		ui.PrintDone("Lockfile updated", lockfilePath)
 	}
 
 	// Sort installs by ID for deterministic Dockerfile

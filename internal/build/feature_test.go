@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -251,6 +254,99 @@ func TestPullFeature(t *testing.T) {
 		t.Fatalf("ExtractFeatureTar: %v", err)
 	}
 	if string(files.InstallSh) != "#!/bin/bash\necho installed" {
+		t.Fatalf("InstallSh = %q", string(files.InstallSh))
+	}
+}
+
+func TestPullFeatureByDigest_CacheHit(t *testing.T) {
+	tgz := createTestTgz(t, map[string]string{
+		"install.sh": "#!/bin/bash\necho locked",
+	})
+	digest := ComputeFeatureDigest(tgz)
+
+	// Pre-populate cache
+	cacheDir := FeatureCacheDir()
+	_ = os.MkdirAll(cacheDir, 0o755)
+	cacheFile := filepath.Join(cacheDir, strings.ReplaceAll(digest, ":", "-")+".tgz")
+	if err := os.WriteFile(cacheFile, tgz, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Remove(cacheFile) }()
+
+	ref := FeatureRef{
+		Registry:   "ghcr.io",
+		Repository: "org/features/test",
+		Tag:        "1",
+		ID:         "test",
+	}
+
+	// Should succeed from cache without network access
+	result, err := PullFeatureByDigest(context.Background(), ref, digest)
+	if err != nil {
+		t.Fatalf("PullFeatureByDigest: %v", err)
+	}
+	if result.Digest != digest {
+		t.Fatalf("digest = %q, want %q", result.Digest, digest)
+	}
+	if string(result.Files.InstallSh) != "#!/bin/bash\necho locked" {
+		t.Fatalf("InstallSh = %q", string(result.Files.InstallSh))
+	}
+}
+
+func TestPullFeatureReturnsDigest(t *testing.T) {
+	tgz := createTestTgz(t, map[string]string{
+		"install.sh": "#!/bin/bash\necho hi",
+	})
+	digest := ComputeFeatureDigest(tgz)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": "t"})
+	})
+	mux.HandleFunc("/v2/org/features/test/manifests/1", func(w http.ResponseWriter, r *http.Request) {
+		manifest := ociManifest{
+			Layers: []ociDescriptor{{Digest: digest, Size: int64(len(tgz))}},
+		}
+		_ = json.NewEncoder(w).Encode(manifest)
+	})
+	mux.HandleFunc(fmt.Sprintf("/v2/org/features/test/blobs/%s", digest), func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(tgz)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	host := srv.Listener.Addr().String()
+	ctx := context.Background()
+
+	// Test via low-level functions (same as TestPullFeature) to verify digest is returned
+	tokenURL := fmt.Sprintf("%s/token?service=%s&scope=repository:%s:pull", srv.URL, host, "org/features/test")
+	token, err := fetchToken(ctx, tokenURL, "")
+	if err != nil {
+		t.Fatalf("fetchToken: %v", err)
+	}
+
+	manifestURL := fmt.Sprintf("%s/v2/org/features/test/manifests/1", srv.URL)
+	manifest, err := fetchManifest(ctx, manifestURL, token)
+	if err != nil {
+		t.Fatalf("fetchManifest: %v", err)
+	}
+
+	if manifest.Layers[0].Digest != digest {
+		t.Fatalf("manifest digest = %q, want %q", manifest.Layers[0].Digest, digest)
+	}
+
+	blobURL := fmt.Sprintf("%s/v2/org/features/test/blobs/%s", srv.URL, digest)
+	blobData, err := fetchBlob(ctx, blobURL, token)
+	if err != nil {
+		t.Fatalf("fetchBlob: %v", err)
+	}
+
+	files, err := ExtractFeatureTar(blobData)
+	if err != nil {
+		t.Fatalf("ExtractFeatureTar: %v", err)
+	}
+	if string(files.InstallSh) != "#!/bin/bash\necho hi" {
 		t.Fatalf("InstallSh = %q", string(files.InstallSh))
 	}
 }

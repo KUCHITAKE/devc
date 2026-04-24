@@ -191,7 +191,7 @@ func runUp(dir string, opts upOptions) error {
 
 	// 10. Build image (with spinner for feature pull, build output streamed)
 	ui.PrintProgress("Building image", ws.Name)
-	imageTag, err := build.BuildFeatureImage(ctx, ws, cfg, ucfg.Features)
+	imageTag, err := build.BuildFeatureImage(ctx, ws, cfg, ucfg.Features, opts.rebuild)
 	if err != nil {
 		return fmt.Errorf("image build: %w", err)
 	}
