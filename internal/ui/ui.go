@@ -209,16 +209,18 @@ func (t *TailRenderer) Clear() {
 // DockerStreamMsg represents a Docker NDJSON stream message.
 type DockerStreamMsg struct {
 	Stream      string `json:"stream"`
+	ID          string `json:"id"`
 	Status      string `json:"status"`
+	Progress    string `json:"progress"`
 	Error       string `json:"error"`
 	ErrorDetail *struct {
 		Message string `json:"message"`
 	} `json:"errorDetail"`
 }
 
-// DrainDockerOutput reads Docker NDJSON output, discarding stream/status lines.
-// If an error is detected in the stream, it returns an error containing the
-// last 20 lines of output for debugging.
+// DrainDockerOutput reads Docker NDJSON output and displays the last few
+// stream/status lines while the operation is running. If an error is detected,
+// it returns an error containing the last 20 raw lines for debugging.
 func DrainDockerOutput(r io.Reader) error {
 	scanner := bufio.NewScanner(r)
 	// Docker build output can have long lines
@@ -226,6 +228,11 @@ func DrainDockerOutput(r io.Reader) error {
 
 	var recent []string
 	const keepLines = 20
+	var tail *TailRenderer
+	if IsTTY {
+		tail = NewTailRenderer(3)
+		defer tail.Clear()
+	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -246,6 +253,27 @@ func DrainDockerOutput(r io.Reader) error {
 		if msg.ErrorDetail != nil && msg.ErrorDetail.Message != "" {
 			return fmt.Errorf("docker error: %s\n%s", msg.ErrorDetail.Message, strings.Join(recent, "\n"))
 		}
+		if tail != nil {
+			writeDockerTailLine(tail, msg)
+		}
 	}
 	return scanner.Err()
+}
+
+func writeDockerTailLine(tail io.Writer, msg DockerStreamMsg) {
+	if msg.Stream != "" {
+		_, _ = io.WriteString(tail, msg.Stream)
+		return
+	}
+	if msg.Status == "" {
+		return
+	}
+	line := msg.Status
+	if msg.ID != "" {
+		line = msg.ID + ": " + line
+	}
+	if msg.Progress != "" {
+		line += " " + strings.TrimSpace(msg.Progress)
+	}
+	_, _ = io.WriteString(tail, line+"\n")
 }

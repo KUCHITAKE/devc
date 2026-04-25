@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"os"
 	"strings"
 	"testing"
@@ -81,5 +82,44 @@ func TestDrainDockerOutput_EmptyInput(t *testing.T) {
 	r := strings.NewReader("")
 	if err := DrainDockerOutput(r); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWriteDockerTailLine(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  DockerStreamMsg
+		want string
+	}{
+		{
+			name: "stream",
+			msg:  DockerStreamMsg{Stream: "Step 1/2 : FROM ubuntu\n"},
+			want: "Step 1/2 : FROM ubuntu\n",
+		},
+		{
+			name: "status",
+			msg:  DockerStreamMsg{Status: "Pulling from library/ubuntu"},
+			want: "Pulling from library/ubuntu\n",
+		},
+		{
+			name: "status with id and progress",
+			msg:  DockerStreamMsg{ID: "abc123", Status: "Downloading", Progress: "[====>     ] 10MB/20MB"},
+			want: "abc123: Downloading [====>     ] 10MB/20MB\n",
+		},
+		{
+			name: "empty",
+			msg:  DockerStreamMsg{},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got bytes.Buffer
+			writeDockerTailLine(&got, tt.msg)
+			if got.String() != tt.want {
+				t.Fatalf("got %q, want %q", got.String(), tt.want)
+			}
+		})
 	}
 }
