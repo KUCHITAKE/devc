@@ -21,6 +21,11 @@ func ExtractCredentials() error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	for _, name := range []string{"git-user-name", "git-user-email", "gh-token"} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
 	// git user.name
 	if out, err := exec.Command("git", "config", "--global", "user.name").Output(); err == nil {
 		_ = os.WriteFile(filepath.Join(dir, "git-user-name"), bytes.TrimSpace(out), 0o644)
@@ -173,7 +178,9 @@ func SetupContainer(containerID, remoteUser string, dotfiles []string) error {
 	}
 	// gh auth (non-fatal)
 	if _, err := os.Stat("/tmp/devc-credentials/gh-token"); err == nil {
-		_ = Exec(ctx, containerID, remoteUser, []string{"bash", "-c", "gh auth login --with-token < /tmp/devc-credentials/gh-token && gh auth setup-git"})
+		if _, err := ExecOutput(ctx, containerID, remoteUser, []string{"sh", "-c", "command -v gh"}); err == nil {
+			_ = Exec(ctx, containerID, remoteUser, []string{"sh", "-c", "gh auth login --with-token < /tmp/devc-credentials/gh-token && gh auth setup-git"})
+		}
 	}
 
 	return nil
