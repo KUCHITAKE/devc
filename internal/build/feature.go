@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -319,4 +320,76 @@ func fetchBlob(ctx context.Context, url, token string) ([]byte, error) {
 func ComputeFeatureDigest(data []byte) string {
 	h := sha256.Sum256(data)
 	return fmt.Sprintf("sha256:%x", h)
+}
+
+// IsLocalFeature returns true if the feature ref is a local path (starts with "./").
+func IsLocalFeature(ref string) bool {
+	return strings.HasPrefix(ref, "./")
+}
+
+// LoadLocalFeature loads a devcontainer feature from a local directory.
+// The ref must start with "./" (e.g., "./myFeature"). The feature directory
+// is resolved relative to <wsDir>/.devcontainer/.
+func LoadLocalFeature(wsDir string, ref string) (*PullResult, error) {
+	dirName := strings.TrimPrefix(ref, "./")
+	featureDir := filepath.Join(wsDir, ".devcontainer", dirName)
+
+	info, err := os.Stat(featureDir)
+	if err != nil {
+		return nil, fmt.Errorf("local feature %q: %w", ref, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("local feature %q: not a directory", ref)
+	}
+
+	files := &FeatureFiles{AllFiles: make(map[string][]byte)}
+	h := sha256.New()
+
+	// Walk directory and collect all regular files
+	var sortedPaths []string
+	fileData := make(map[string][]byte)
+
+	err = filepath.WalkDir(featureDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		relPath, err := filepath.Rel(featureDir, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", relPath, err)
+		}
+		sortedPaths = append(sortedPaths, relPath)
+		fileData[relPath] = data
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("local feature %q: %w", ref, err)
+	}
+
+	// Sort paths for deterministic digest
+	sort.Strings(sortedPaths)
+	for _, p := range sortedPaths {
+		data := fileData[p]
+		files.AllFiles[p] = data
+		_, _ = fmt.Fprintf(h, "%s\n%d\n", p, len(data))
+		_, _ = h.Write(data)
+	}
+
+	installSh, ok := files.AllFiles["install.sh"]
+	if !ok {
+		return nil, fmt.Errorf("local feature %q: missing install.sh", ref)
+	}
+	files.InstallSh = installSh
+
+	digest := fmt.Sprintf("sha256:%x", h.Sum(nil))
+	return &PullResult{Files: files, Digest: digest}, nil
 }

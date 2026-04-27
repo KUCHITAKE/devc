@@ -240,17 +240,32 @@ func InstallFeaturesRuntime(ctx context.Context, containerID, wsDir string, feat
 	newLock := &build.Lockfile{Features: make(map[string]build.FeatureLock)}
 	for _, ref := range refs {
 		opts := features[ref]
-		fr, err := build.ParseFeatureRef(ref)
-		if err != nil {
-			ui.PrintWarn("Skipping feature", fmt.Sprintf("%s: %v", ref, err))
-			continue
-		}
 
-		ui.PrintProgress("Installing feature", fr.ID)
+		var featureID string
+		var result *build.PullResult
 
-		installErr := func() error {
+		if build.IsLocalFeature(ref) {
+			// Local path feature — load from disk
+			featureID = strings.TrimPrefix(ref, "./")
+			var err error
+			result, err = build.LoadLocalFeature(wsDir, ref)
+			if err != nil {
+				ui.PrintWarn("Feature install failed", featureID)
+				fmt.Fprintln(os.Stderr, err)
+				continue
+			}
+			ui.PrintProgress("Installing feature", featureID)
+		} else {
+			fr, err := build.ParseFeatureRef(ref)
+			if err != nil {
+				ui.PrintWarn("Skipping feature", fmt.Sprintf("%s: %v", ref, err))
+				continue
+			}
+			featureID = fr.ID
+
+			ui.PrintProgress("Installing feature", featureID)
+
 			// Pull (use locked digest if available)
-			var result *build.PullResult
 			var pullErr error
 			if lockfile != nil {
 				if lock, ok := lockfile.Features[ref]; ok {
@@ -261,20 +276,24 @@ func InstallFeaturesRuntime(ctx context.Context, containerID, wsDir string, feat
 				result, pullErr = build.PullFeature(ctx, fr)
 			}
 			if pullErr != nil {
-				return fmt.Errorf("pull: %w", pullErr)
+				ui.PrintWarn("Feature install failed", featureID)
+				fmt.Fprintln(os.Stderr, pullErr)
+				continue
 			}
 
 			newLock.Features[ref] = build.FeatureLock{
 				Version:  fr.Tag,
 				Resolved: result.Digest,
 			}
+		}
 
+		installErr := func() error {
 			// Create tar archive for CopyToContainer
 			var buf bytes.Buffer
 			tw := tar.NewWriter(&buf)
 			for name, data := range result.Files.AllFiles {
 				if err := tw.WriteHeader(&tar.Header{
-					Name: fr.ID + "/" + name,
+					Name: featureID + "/" + name,
 					Mode: 0o755,
 					Size: int64(len(data)),
 				}); err != nil {
@@ -294,7 +313,7 @@ func InstallFeaturesRuntime(ctx context.Context, containerID, wsDir string, feat
 			}
 
 			// Build install command with env vars
-			featureDir := "/tmp/build-features/" + fr.ID
+			featureDir := "/tmp/build-features/" + featureID
 			envs := build.FeatureEnvVars(opts)
 			var cmdParts []string
 			cmdParts = append(cmdParts, "cd "+featureDir)
@@ -314,10 +333,10 @@ func InstallFeaturesRuntime(ctx context.Context, containerID, wsDir string, feat
 		}()
 
 		if installErr != nil {
-			ui.PrintWarn("Feature install failed", fr.ID)
+			ui.PrintWarn("Feature install failed", featureID)
 			fmt.Fprintln(os.Stderr, installErr)
 		} else {
-			ui.PrintDone("Installed feature", fr.ID)
+			ui.PrintDone("Installed feature", featureID)
 		}
 	}
 

@@ -73,9 +73,19 @@ func FeatureEnvVars(options map[string]interface{}) map[string]string {
 	return envs
 }
 
-func ComputeImageTag(wsID, baseImage string, features map[string]map[string]interface{}) string {
+// ComputeImageTag computes a deterministic image tag from workspace, base image,
+// features, and optional content digests. The digests map provides content-based
+// hashes for local features (keyed by feature ref string) to ensure cache
+// invalidation when local feature files change.
+func ComputeImageTag(wsID, baseImage string, features map[string]map[string]interface{}, digests ...map[string]string) string {
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "base=%s\n", baseImage)
+
+	// Merge digest maps
+	var digestMap map[string]string
+	if len(digests) > 0 && digests[0] != nil {
+		digestMap = digests[0]
+	}
 
 	// Sort feature keys for determinism
 	keys := make([]string, 0, len(features))
@@ -85,6 +95,11 @@ func ComputeImageTag(wsID, baseImage string, features map[string]map[string]inte
 	sort.Strings(keys)
 	for _, k := range keys {
 		_, _ = fmt.Fprintf(h, "feature=%s\n", k)
+		if digestMap != nil {
+			if d, ok := digestMap[k]; ok {
+				_, _ = fmt.Fprintf(h, "  digest=%s\n", d)
+			}
+		}
 		opts := features[k]
 		optKeys := make([]string, 0, len(opts))
 		for ok := range opts {
@@ -159,7 +174,19 @@ func BuildFeatureImage(ctx context.Context, ws config.Workspace, cfg *config.Dev
 		return "", fmt.Errorf("no image or build.dockerfile specified")
 	}
 
-	imageTag := ComputeImageTag(ws.ID, baseImage, allFeatures)
+	// Pre-resolve local features to get content digests for image tag computation.
+	localDigests := make(map[string]string)
+	for ref := range allFeatures {
+		if IsLocalFeature(ref) {
+			result, err := LoadLocalFeature(ws.Dir, ref)
+			if err != nil {
+				return "", fmt.Errorf("load local feature %q: %w", ref, err)
+			}
+			localDigests[ref] = result.Digest
+		}
+	}
+
+	imageTag := ComputeImageTag(ws.ID, baseImage, allFeatures, localDigests)
 
 	// Check if image already exists locally (cache hit)
 	cli, err := docker.GetClient()
@@ -203,11 +230,28 @@ func BuildFeatureImage(ctx context.Context, ws config.Workspace, cfg *config.Dev
 		lockfile, _ = ReadLockfile(lockfilePath)
 	}
 
-	// Pull features
+	// Pull/load features
 	ui.PrintProgress("Pulling features", fmt.Sprintf("%d features", len(allFeatures)))
 	var installs []FeatureInstall
 	newLock := &Lockfile{Features: make(map[string]FeatureLock)}
 	for ref, opts := range allFeatures {
+		if IsLocalFeature(ref) {
+			// Local path feature — load from disk
+			dirName := strings.TrimPrefix(ref, "./")
+			result, err := LoadLocalFeature(ws.Dir, ref)
+			if err != nil {
+				return "", fmt.Errorf("load local feature %q: %w", ref, err)
+			}
+			ui.PrintDone("Loaded local feature", dirName)
+			installs = append(installs, FeatureInstall{
+				ID:      dirName,
+				Files:   result.Files,
+				Options: opts,
+			})
+			// No lockfile entry for local features
+			continue
+		}
+
 		fr, err := ParseFeatureRef(ref)
 		if err != nil {
 			return "", fmt.Errorf("parse feature ref %q: %w", ref, err)

@@ -204,6 +204,25 @@ func TestComputeImageTag(t *testing.T) {
 	if !strings.HasPrefix(tag1, "devc-myws:") {
 		t.Fatalf("tag should start with 'devc-myws:', got %q", tag1)
 	}
+
+	// With digest map — same features but different digest changes tag
+	localFeatures := map[string]map[string]interface{}{
+		"./myFeature": {},
+	}
+	d1 := map[string]string{"./myFeature": "sha256:aaa"}
+	d2 := map[string]string{"./myFeature": "sha256:bbb"}
+	tagL1 := ComputeImageTag("myws", "ubuntu:22.04", localFeatures, d1)
+	tagL2 := ComputeImageTag("myws", "ubuntu:22.04", localFeatures, d2)
+	if tagL1 == tagL2 {
+		t.Fatal("different digests should produce different tags")
+	}
+
+	// Without digest map — backward compatible
+	tagL3 := ComputeImageTag("myws", "ubuntu:22.04", localFeatures)
+	tagL4 := ComputeImageTag("myws", "ubuntu:22.04", localFeatures)
+	if tagL3 != tagL4 {
+		t.Fatal("same input without digests should produce same tag")
+	}
 }
 
 func TestPrepareBuildContext(t *testing.T) {

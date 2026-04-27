@@ -293,6 +293,133 @@ func TestPullFeatureByDigest_CacheHit(t *testing.T) {
 	}
 }
 
+func TestIsLocalFeature(t *testing.T) {
+	tests := []struct {
+		ref  string
+		want bool
+	}{
+		{"./myFeature", true},
+		{"./nested/feature", true},
+		{"ghcr.io/devcontainers/features/go:1", false},
+		{"", false},
+		{"../outside", false},
+		{"/absolute/path", false},
+	}
+	for _, tt := range tests {
+		if got := IsLocalFeature(tt.ref); got != tt.want {
+			t.Errorf("IsLocalFeature(%q) = %v, want %v", tt.ref, got, tt.want)
+		}
+	}
+}
+
+func TestLoadLocalFeature(t *testing.T) {
+	t.Run("happy path", func(t *testing.T) {
+		wsDir := t.TempDir()
+		featureDir := filepath.Join(wsDir, ".devcontainer", "myFeature")
+		if err := os.MkdirAll(featureDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(featureDir, "install.sh"), []byte("#!/bin/bash\necho local"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(featureDir, "devcontainer-feature.json"), []byte(`{"id":"myFeature"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := LoadLocalFeature(wsDir, "./myFeature")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(result.Files.InstallSh) != "#!/bin/bash\necho local" {
+			t.Fatalf("InstallSh = %q", string(result.Files.InstallSh))
+		}
+		if len(result.Files.AllFiles) != 2 {
+			t.Fatalf("AllFiles count = %d, want 2", len(result.Files.AllFiles))
+		}
+		if result.Digest == "" {
+			t.Fatal("expected non-empty digest")
+		}
+	})
+
+	t.Run("missing install.sh", func(t *testing.T) {
+		wsDir := t.TempDir()
+		featureDir := filepath.Join(wsDir, ".devcontainer", "myFeature")
+		if err := os.MkdirAll(featureDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(featureDir, "readme.md"), []byte("hello"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := LoadLocalFeature(wsDir, "./myFeature")
+		if err == nil {
+			t.Fatal("expected error for missing install.sh")
+		}
+	})
+
+	t.Run("directory does not exist", func(t *testing.T) {
+		wsDir := t.TempDir()
+		_, err := LoadLocalFeature(wsDir, "./nonexistent")
+		if err == nil {
+			t.Fatal("expected error for missing directory")
+		}
+	})
+
+	t.Run("nested files", func(t *testing.T) {
+		wsDir := t.TempDir()
+		featureDir := filepath.Join(wsDir, ".devcontainer", "myFeature")
+		subDir := filepath.Join(featureDir, "scripts")
+		if err := os.MkdirAll(subDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(featureDir, "install.sh"), []byte("#!/bin/bash"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(subDir, "helper.sh"), []byte("#!/bin/bash\nhelper"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := LoadLocalFeature(wsDir, "./myFeature")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, ok := result.Files.AllFiles["scripts/helper.sh"]; !ok {
+			t.Fatalf("expected scripts/helper.sh in AllFiles, got keys: %v", allKeys(result.Files.AllFiles))
+		}
+	})
+
+	t.Run("digest changes with content", func(t *testing.T) {
+		wsDir := t.TempDir()
+		featureDir := filepath.Join(wsDir, ".devcontainer", "myFeature")
+		if err := os.MkdirAll(featureDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(featureDir, "install.sh"), []byte("v1"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		r1, _ := LoadLocalFeature(wsDir, "./myFeature")
+
+		if err := os.WriteFile(filepath.Join(featureDir, "install.sh"), []byte("v2"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		r2, _ := LoadLocalFeature(wsDir, "./myFeature")
+
+		if r1.Digest == r2.Digest {
+			t.Fatal("expected different digests for different content")
+		}
+	})
+}
+
+func allKeys(m map[string][]byte) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func TestPullFeatureReturnsDigest(t *testing.T) {
 	tgz := createTestTgz(t, map[string]string{
 		"install.sh": "#!/bin/bash\necho hi",
