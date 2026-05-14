@@ -20,9 +20,10 @@ import (
 )
 
 type FeatureInstall struct {
-	ID      string
-	Files   *FeatureFiles
-	Options map[string]interface{}
+	ID           string
+	Files        *FeatureFiles
+	Options      map[string]interface{}
+	ContainerEnv map[string]string
 }
 
 func GenerateDockerfile(baseImage string, features []FeatureInstall) string {
@@ -46,6 +47,18 @@ func GenerateDockerfile(baseImage string, features []FeatureInstall) string {
 
 		b.WriteString(" \\\n    && chmod +x install.sh && ./install.sh")
 		fmt.Fprintf(&b, " \\\n    && rm -rf /tmp/build-features/%s\n", f.ID)
+
+		// Emit ENV from feature's containerEnv (devcontainer-feature.json)
+		if len(f.ContainerEnv) > 0 {
+			envKeys := make([]string, 0, len(f.ContainerEnv))
+			for k := range f.ContainerEnv {
+				envKeys = append(envKeys, k)
+			}
+			sort.Strings(envKeys)
+			for _, k := range envKeys {
+				fmt.Fprintf(&b, "ENV %s=%q\n", k, f.ContainerEnv[k])
+			}
+		}
 	}
 
 	return b.String()
@@ -244,9 +257,10 @@ func BuildFeatureImage(ctx context.Context, ws config.Workspace, cfg *config.Dev
 			}
 			ui.PrintDone("Loaded local feature", dirName)
 			installs = append(installs, FeatureInstall{
-				ID:      dirName,
-				Files:   result.Files,
-				Options: opts,
+				ID:           dirName,
+				Files:        result.Files,
+				Options:      opts,
+				ContainerEnv: ParseContainerEnv(result.Files),
 			})
 			// No lockfile entry for local features
 			continue
@@ -274,9 +288,10 @@ func BuildFeatureImage(ctx context.Context, ws config.Workspace, cfg *config.Dev
 		}
 		ui.PrintDone("Pulled feature", fr.ID)
 		installs = append(installs, FeatureInstall{
-			ID:      fr.ID,
-			Files:   result.Files,
-			Options: opts,
+			ID:           fr.ID,
+			Files:        result.Files,
+			Options:      opts,
+			ContainerEnv: ParseContainerEnv(result.Files),
 		})
 		newLock.Features[ref] = FeatureLock{
 			Version:  fr.Tag,

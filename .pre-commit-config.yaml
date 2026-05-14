@@ -8,13 +8,14 @@ repos:
     hooks:
       - id: gofmt
         name: gofmt
-        entry: bash -c 'out=$(gofmt -l "$@"); if [ -n "$out" ]; then echo "gofmt found unformatted files:"; echo "$out"; exit 1; fi' --
+        entry: bash -c 'docker run --rm -v "$PWD":/app -w /app golang:1.25 bash -c "out=\$(gofmt -l .); if [ -n \"\$out\" ]; then echo \"gofmt found unformatted files:\"; echo \"\$out\"; exit 1; fi"'
         language: system
+        pass_filenames: false
         types: [go]
 
       - id: go-test
         name: go test
-        entry: go test ./...
+        entry: bash -c 'docker run --rm -v "$PWD":/app -w /app golang:1.25 go test ./...'
         language: system
         pass_filenames: false
         types: [go]

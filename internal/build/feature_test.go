@@ -412,6 +412,59 @@ func TestLoadLocalFeature(t *testing.T) {
 	})
 }
 
+func TestParseContainerEnv(t *testing.T) {
+	t.Run("with containerEnv", func(t *testing.T) {
+		files := &FeatureFiles{
+			AllFiles: map[string][]byte{
+				"install.sh": []byte("#!/bin/bash"),
+				"devcontainer-feature.json": []byte(`{
+					"id": "go",
+					"containerEnv": {
+						"GOROOT": "/usr/local/go",
+						"GOPATH": "/go",
+						"PATH": "/usr/local/go/bin:/go/bin:${PATH}"
+					}
+				}`),
+			},
+		}
+		env := ParseContainerEnv(files)
+		if env == nil {
+			t.Fatal("expected non-nil containerEnv")
+		}
+		if env["GOROOT"] != "/usr/local/go" {
+			t.Fatalf("GOROOT = %q", env["GOROOT"])
+		}
+		if env["PATH"] != "/usr/local/go/bin:/go/bin:${PATH}" {
+			t.Fatalf("PATH = %q", env["PATH"])
+		}
+	})
+
+	t.Run("without containerEnv", func(t *testing.T) {
+		files := &FeatureFiles{
+			AllFiles: map[string][]byte{
+				"install.sh":                []byte("#!/bin/bash"),
+				"devcontainer-feature.json": []byte(`{"id": "test"}`),
+			},
+		}
+		env := ParseContainerEnv(files)
+		if env != nil {
+			t.Fatalf("expected nil, got %v", env)
+		}
+	})
+
+	t.Run("no devcontainer-feature.json", func(t *testing.T) {
+		files := &FeatureFiles{
+			AllFiles: map[string][]byte{
+				"install.sh": []byte("#!/bin/bash"),
+			},
+		}
+		env := ParseContainerEnv(files)
+		if env != nil {
+			t.Fatalf("expected nil, got %v", env)
+		}
+	})
+}
+
 func allKeys(m map[string][]byte) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

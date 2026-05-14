@@ -59,6 +59,41 @@ func TestGenerateDockerfile_MultipleFeatures(t *testing.T) {
 	}
 }
 
+func TestGenerateDockerfile_ContainerEnv(t *testing.T) {
+	features := []FeatureInstall{
+		{
+			ID:      "go",
+			Files:   &FeatureFiles{InstallSh: []byte("#!/bin/bash")},
+			Options: nil,
+			ContainerEnv: map[string]string{
+				"GOROOT": "/usr/local/go",
+				"PATH":   "/usr/local/go/bin:/go/bin:${PATH}",
+			},
+		},
+	}
+	df := GenerateDockerfile("ubuntu:22.04", features)
+	if !strings.Contains(df, `ENV GOROOT="/usr/local/go"`) {
+		t.Fatalf("should contain ENV GOROOT, got %q", df)
+	}
+	if !strings.Contains(df, `ENV PATH="/usr/local/go/bin:/go/bin:${PATH}"`) {
+		t.Fatalf("should contain ENV PATH, got %q", df)
+	}
+}
+
+func TestGenerateDockerfile_NoContainerEnv(t *testing.T) {
+	features := []FeatureInstall{
+		{
+			ID:      "test",
+			Files:   &FeatureFiles{InstallSh: []byte("#!/bin/bash")},
+			Options: nil,
+		},
+	}
+	df := GenerateDockerfile("ubuntu:22.04", features)
+	if strings.Contains(df, "ENV ") {
+		t.Fatalf("should not contain ENV, got %q", df)
+	}
+}
+
 func TestFeatureEnvVars(t *testing.T) {
 	tests := []struct {
 		name    string

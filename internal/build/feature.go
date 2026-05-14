@@ -64,6 +64,25 @@ type FeatureFiles struct {
 	AllFiles  map[string][]byte
 }
 
+// featureJSON represents the relevant fields of devcontainer-feature.json.
+type featureJSON struct {
+	ContainerEnv map[string]string `json:"containerEnv"`
+}
+
+// ParseContainerEnv extracts the containerEnv map from devcontainer-feature.json
+// in the feature's file set. Returns nil if the file is absent or has no containerEnv.
+func ParseContainerEnv(files *FeatureFiles) map[string]string {
+	data, ok := files.AllFiles["devcontainer-feature.json"]
+	if !ok {
+		return nil
+	}
+	var fj featureJSON
+	if err := json.Unmarshal(data, &fj); err != nil {
+		return nil
+	}
+	return fj.ContainerEnv
+}
+
 func ExtractFeatureTar(data []byte) (*FeatureFiles, error) {
 	// OCI feature blobs are plain tar; detect gzip and unwrap if needed.
 	var r io.Reader = bytes.NewReader(data)
