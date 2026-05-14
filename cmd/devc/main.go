@@ -13,7 +13,7 @@ import (
 var version = "dev"
 
 var knownSubcommands = map[string]bool{
-	"up": true, "down": true, "clean": true, "rebuild": true, "ls": true, "list": true, "ps": true, "help": true,
+	"up": true, "down": true, "clean": true, "rebuild": true, "ls": true, "list": true, "ps": true, "exec": true, "help": true,
 }
 
 // rewriteLegacyArgs provides backward compatibility with the bash script's
@@ -70,6 +70,7 @@ automatically published.`,
 	root.AddCommand(newCleanCmd())
 	root.AddCommand(newRebuildCmd())
 	root.AddCommand(newLsCmd())
+	root.AddCommand(newExecCmd())
 
 	return root
 }
