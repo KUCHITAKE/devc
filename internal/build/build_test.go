@@ -1,6 +1,8 @@
 package build
 
 import (
+	"archive/tar"
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -258,6 +260,56 @@ func TestComputeImageTag(t *testing.T) {
 	if tagL3 != tagL4 {
 		t.Fatal("same input without digests should produce same tag")
 	}
+}
+
+func TestWriteFeatureFilesToTar(t *testing.T) {
+	t.Run("writes files with correct prefix and mode", func(t *testing.T) {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+
+		files := map[string][]byte{
+			"install.sh": []byte("#!/bin/bash\necho hi"),
+			"config.sh":  []byte("export FOO=bar"),
+		}
+
+		if err := WriteFeatureFilesToTar(tw, "my-feature", files); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		contents := ReadTarContents(t, &buf)
+		if len(contents) != 2 {
+			t.Fatalf("expected 2 entries, got %d", len(contents))
+		}
+		if _, ok := contents["my-feature/install.sh"]; !ok {
+			t.Fatal("missing my-feature/install.sh")
+		}
+		if _, ok := contents["my-feature/config.sh"]; !ok {
+			t.Fatal("missing my-feature/config.sh")
+		}
+		if string(contents["my-feature/install.sh"]) != "#!/bin/bash\necho hi" {
+			t.Fatalf("install.sh content = %q", contents["my-feature/install.sh"])
+		}
+	})
+
+	t.Run("empty files map", func(t *testing.T) {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+
+		if err := WriteFeatureFilesToTar(tw, "empty", map[string][]byte{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		contents := ReadTarContents(t, &buf)
+		if len(contents) != 0 {
+			t.Fatalf("expected 0 entries, got %d", len(contents))
+		}
+	})
 }
 
 func TestPrepareBuildContext(t *testing.T) {

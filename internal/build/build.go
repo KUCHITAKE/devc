@@ -128,6 +128,24 @@ func ComputeImageTag(wsID, baseImage string, features map[string]map[string]inte
 	return fmt.Sprintf("devc-%s:%s", wsID, sum[:12])
 }
 
+// WriteFeatureFilesToTar writes feature files into a tar writer with the given
+// featureID as a path prefix. Each file gets mode 0o755.
+func WriteFeatureFilesToTar(tw *tar.Writer, featureID string, files map[string][]byte) error {
+	for name, data := range files {
+		if err := tw.WriteHeader(&tar.Header{
+			Name: featureID + "/" + name,
+			Mode: 0o755,
+			Size: int64(len(data)),
+		}); err != nil {
+			return fmt.Errorf("tar header: %w", err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			return fmt.Errorf("tar write: %w", err)
+		}
+	}
+	return nil
+}
+
 func PrepareBuildContext(dockerfile string, features []FeatureInstall) (io.Reader, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -147,18 +165,8 @@ func PrepareBuildContext(dockerfile string, features []FeatureInstall) (io.Reade
 
 	// Add feature files
 	for _, f := range features {
-		for name, data := range f.Files.AllFiles {
-			hdr := &tar.Header{
-				Name: f.ID + "/" + name,
-				Mode: 0o755,
-				Size: int64(len(data)),
-			}
-			if err := tw.WriteHeader(hdr); err != nil {
-				return nil, err
-			}
-			if _, err := tw.Write(data); err != nil {
-				return nil, err
-			}
+		if err := WriteFeatureFilesToTar(tw, f.ID, f.Files.AllFiles); err != nil {
+			return nil, err
 		}
 	}
 
