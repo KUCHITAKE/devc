@@ -14,7 +14,6 @@ import (
 
 	"github.com/closer/devc/internal/build"
 	"github.com/closer/devc/internal/config"
-	"github.com/closer/devc/internal/container"
 	"github.com/closer/devc/internal/daemon"
 	"github.com/closer/devc/internal/docker"
 	"github.com/closer/devc/internal/meta"
@@ -206,7 +205,7 @@ func Project(ws config.Workspace) string {
 // InstallFeaturesRuntime installs OCI features inside a running container.
 // Unlike the image-based flow (which bakes features into the image at build time),
 // this runs install.sh at runtime via exec — used for compose-based devcontainers.
-func InstallFeaturesRuntime(ctx context.Context, containerID, wsDir string, features map[string]map[string]interface{}, rebuild bool) error {
+func InstallFeaturesRuntime(ctx context.Context, containerID, remoteUser, wsDir string, features map[string]map[string]interface{}, rebuild bool) error {
 	if len(features) == 0 {
 		return nil
 	}
@@ -291,17 +290,8 @@ func InstallFeaturesRuntime(ctx context.Context, containerID, wsDir string, feat
 			// Create tar archive for CopyToContainer
 			var buf bytes.Buffer
 			tw := tar.NewWriter(&buf)
-			for name, data := range result.Files.AllFiles {
-				if err := tw.WriteHeader(&tar.Header{
-					Name: featureID + "/" + name,
-					Mode: 0o755,
-					Size: int64(len(data)),
-				}); err != nil {
-					return fmt.Errorf("tar: %w", err)
-				}
-				if _, err := tw.Write(data); err != nil {
-					return fmt.Errorf("tar: %w", err)
-				}
+			if err := build.WriteFeatureFilesToTar(tw, featureID, result.Files.AllFiles); err != nil {
+				return fmt.Errorf("tar: %w", err)
 			}
 			if err := tw.Close(); err != nil {
 				return fmt.Errorf("tar: %w", err)
@@ -317,6 +307,8 @@ func InstallFeaturesRuntime(ctx context.Context, containerID, wsDir string, feat
 			envs := build.FeatureEnvVars(opts)
 			var cmdParts []string
 			cmdParts = append(cmdParts, "cd "+featureDir)
+			// devcontainer Features spec user env vars (must precede install.sh)
+			cmdParts = append(cmdParts, build.FeatureUserEnv(remoteUser)...)
 			envKeys := make([]string, 0, len(envs))
 			for k := range envs {
 				envKeys = append(envKeys, k)
@@ -358,89 +350,38 @@ type UpOptions struct {
 	Rebuild bool
 }
 
-// RunUpCompose is the compose-based equivalent of the image-based flow in RunUp.
-func RunUpCompose(ctx context.Context, ws config.Workspace, cfg *config.DevcontainerConfig, cc *Config, ucfg *config.UserConfig, opts UpOptions, version string, enterContainer func(ctx context.Context, ws config.Workspace, containerID, remoteUser, workspaceFolder string, staticPorts []string) error) error {
+// StartComposeServices handles the compose-specific setup: teardown on rebuild,
+// port resolution, override YAML generation, docker compose up, and metadata injection.
+// It returns the container ID and resolved ports for the caller to finalize.
+func StartComposeServices(ctx context.Context, ws config.Workspace, cfg *config.DevcontainerConfig, cc *Config, ucfg *config.UserConfig, opts UpOptions) (string, []string, error) {
 	project := Project(ws)
 
-	// 1. Check existing service container
-	containerID, findErr := FindServiceContainer(ctx, project, cc.Service)
-
-	if findErr == nil && !opts.Rebuild {
-		if docker.IsContainerRunning(containerID) {
-			// Already running — attach directly
-			ui.PrintDone("Attaching to container", containerID[:12])
-		} else {
-			// Stopped — restart
-			ui.PrintProgress("Restarting services", project)
-
-			// Ensure daemon socket directory exists (may be lost after host reboot)
-			sockDir := daemon.SockDir(ws.ID)
-			if err := os.MkdirAll(sockDir, 0o755); err != nil {
-				return fmt.Errorf("create daemon socket dir: %w", err)
-			}
-
-			if err := Exec(ctx, cc.Files, project, "start"); err != nil {
-				return fmt.Errorf("compose start: %w", err)
-			}
-			// Re-find container after start
-			containerID, findErr = FindServiceContainer(ctx, project, cc.Service)
-			if findErr != nil {
-				return fmt.Errorf("find container after start: %w", findErr)
-			}
-			// Run postStartCommand only
-			postStartHooks := container.ParseLifecycleHook(cfg.PostStartCommand)
-			if err := container.RunLifecycleHooks(ctx, containerID, cfg.RemoteUser, postStartHooks); err != nil {
-				ui.PrintWarn("Lifecycle hooks had errors", err.Error())
-			}
-		}
-
-		// Ensure devc binary is present (may be lost if /tmp was cleaned)
-		if err := meta.EnsureDevcBinary(daemon.SockDir(ws.ID)); err != nil {
-			ui.PrintWarn("devc binary restore failed", err.Error())
-		}
-
-		// Resolve remote user (fall back to root if user doesn't exist)
-		cfg.RemoteUser = docker.ResolveRemoteUser(ctx, containerID, cfg.RemoteUser)
-
-		// Setup and enter
-		if err := ui.RunWithSpinner("Setting up container", "", func() error {
-			if err := docker.SetupContainer(containerID, cfg.RemoteUser, ucfg.Dotfiles); err != nil {
-				ui.PrintWarn("Container setup had errors", err.Error())
-			}
-			return nil
-		}); err != nil {
-			return err
-		}
-
-		return enterContainer(ctx, ws, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder, nil)
-	}
-
-	// 2. Rebuild: tear down existing
+	// 1. Rebuild: tear down existing
 	if opts.Rebuild {
 		ui.PrintProgress("Removing containers", project)
 		_ = Exec(ctx, cc.Files, project, "down", "--remove-orphans")
 	}
 
-	// 3. Collect and resolve ports
+	// 2. Collect and resolve ports
 	ports := config.CollectPorts(cfg.Raw, opts.Ports)
 	resolvedPorts := config.ResolveAllPorts(ports)
 	if len(resolvedPorts) > 0 {
 		ui.PrintDone("Ports", strings.Join(resolvedPorts, ", "))
 	}
 
-	// 4. Generate override YAML
+	// 3. Generate override YAML
 	sockDir := daemon.SockDir(ws.ID)
 	mounts := config.BuildHostMounts(ucfg, ws.ID, sockDir)
 	overridePath, err := WriteOverride(ws, cc, cfg.RemoteWorkspaceFolder, mounts, resolvedPorts, cfg.ContainerEnv)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
 	defer func() { _ = os.Remove(overridePath) }()
 
 	// Build file list: original compose files + override
 	allFiles := append(append([]string{}, cc.Files...), overridePath)
 
-	// 5. docker compose up -d
+	// 4. docker compose up -d
 	upArgs := []string{"up", "-d", "--build"}
 	if len(cc.RunServices) > 0 {
 		upArgs = append(upArgs, cc.RunServices...)
@@ -448,49 +389,15 @@ func RunUpCompose(ctx context.Context, ws config.Workspace, cfg *config.Devconta
 
 	ui.PrintProgress("Starting services", project)
 	if err := ExecStream(ctx, allFiles, project, upArgs...); err != nil {
-		return fmt.Errorf("compose up: %w", err)
+		return "", nil, fmt.Errorf("compose up: %w", err)
 	}
 
-	// 6. Find service container
-	containerID, err = FindServiceContainer(ctx, project, cc.Service)
+	// 5. Find service container
+	containerID, err := FindServiceContainer(ctx, project, cc.Service)
 	if err != nil {
-		return fmt.Errorf("find service container: %w", err)
+		return "", nil, fmt.Errorf("find service container: %w", err)
 	}
 	ui.PrintDone("Container ready", containerID[:12])
 
-	// 7. Resolve remote user (fall back to root if user doesn't exist)
-	cfg.RemoteUser = docker.ResolveRemoteUser(ctx, containerID, cfg.RemoteUser)
-
-	// 8. Install features at runtime (compose can't bake them into the image)
-	allFeatures := build.MergeFeatures(ucfg.Features, cfg.Features)
-	if err := InstallFeaturesRuntime(ctx, containerID, ws.Dir, allFeatures, opts.Rebuild); err != nil {
-		ui.PrintWarn("Feature installation had errors", err.Error())
-	}
-
-	// 9. Inject devc binary and metadata
-	m := meta.BuildContainerMeta(ws, cfg, resolvedPorts, allFeatures, ucfg.Dotfiles, "compose", "", version)
-	if err := meta.InjectIntoContainer(ctx, containerID, ws.ID, m, sockDir); err != nil {
-		ui.PrintWarn("devc injection failed", err.Error())
-	}
-
-	// 10. Lifecycle hooks
-	onCreateHooks := container.ParseLifecycleHook(cfg.OnCreateCommand)
-	postCreateHooks := container.ParseLifecycleHook(cfg.PostCreateCommand)
-	postStartHooks := container.ParseLifecycleHook(cfg.PostStartCommand)
-	if err := container.RunLifecycleHooks(ctx, containerID, cfg.RemoteUser, onCreateHooks, postCreateHooks, postStartHooks); err != nil {
-		ui.PrintWarn("Lifecycle hooks had errors", err.Error())
-	}
-
-	// 11. Setup container
-	if err := ui.RunWithSpinner("Setting up container", "", func() error {
-		if err := docker.SetupContainer(containerID, cfg.RemoteUser, ucfg.Dotfiles); err != nil {
-			ui.PrintWarn("Container setup had errors", err.Error())
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-
-	// 12. Enter container
-	return enterContainer(ctx, ws, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder, resolvedPorts)
+	return containerID, resolvedPorts, nil
 }

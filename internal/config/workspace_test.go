@@ -164,6 +164,104 @@ func TestResolveWorkspace_UniqueID(t *testing.T) {
 	}
 }
 
+func TestEnsureDevcontainerJSON_CreatesFile(t *testing.T) {
+	dir := t.TempDir()
+	ws := Workspace{Dir: dir, Name: "myproject", ID: "myproject-abc12345"}
+
+	if err := EnsureDevcontainerJSON(ws); err != nil {
+		t.Fatal(err)
+	}
+
+	dcJSON := filepath.Join(dir, ".devcontainer", "devcontainer.json")
+	data, err := os.ReadFile(dcJSON)
+	if err != nil {
+		t.Fatalf("devcontainer.json should exist: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, `"myproject"`) {
+		t.Errorf("should contain workspace name, got %q", content)
+	}
+	if !strings.Contains(content, "mcr.microsoft.com/devcontainers/base:ubuntu") {
+		t.Errorf("should contain default image, got %q", content)
+	}
+}
+
+func TestEnsureDevcontainerJSON_ExistingFileUntouched(t *testing.T) {
+	dir := t.TempDir()
+	dcDir := filepath.Join(dir, ".devcontainer")
+	if err := os.MkdirAll(dcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	existing := `{"name": "custom", "image": "alpine:3.18"}`
+	dcJSON := filepath.Join(dcDir, "devcontainer.json")
+	if err := os.WriteFile(dcJSON, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := Workspace{Dir: dir, Name: "myproject", ID: "myproject-abc12345"}
+	if err := EnsureDevcontainerJSON(ws); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(dcJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != existing {
+		t.Errorf("existing file should be untouched, got %q", string(data))
+	}
+}
+
+func TestReadDevcontainerJSON_Valid(t *testing.T) {
+	dir := t.TempDir()
+	dcDir := filepath.Join(dir, ".devcontainer")
+	if err := os.MkdirAll(dcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dcDir, "devcontainer.json"), []byte(`{"image": "ubuntu:22.04"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := Workspace{Dir: dir, Name: "test", ID: "test"}
+	raw, err := ReadDevcontainerJSON(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["image"]; !ok {
+		t.Fatal("should contain 'image' key")
+	}
+}
+
+func TestReadDevcontainerJSON_MissingFile(t *testing.T) {
+	dir := t.TempDir()
+	ws := Workspace{Dir: dir, Name: "test", ID: "test"}
+
+	_, err := ReadDevcontainerJSON(ws)
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestReadDevcontainerJSON_InvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	dcDir := filepath.Join(dir, ".devcontainer")
+	if err := os.MkdirAll(dcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dcDir, "devcontainer.json"), []byte(`{invalid`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := Workspace{Dir: dir, Name: "test", ID: "test"}
+	_, err := ReadDevcontainerJSON(ws)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "parse devcontainer.json") {
+		t.Errorf("error = %q, want to contain 'parse devcontainer.json'", err.Error())
+	}
+}
+
 func TestComposeFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	ws := Workspace{Dir: tmpDir, Name: "test", ID: "test"}

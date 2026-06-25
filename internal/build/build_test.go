@@ -1,6 +1,8 @@
 package build
 
 import (
+	"archive/tar"
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,9 +10,63 @@ import (
 )
 
 func TestGenerateDockerfile_NoFeatures(t *testing.T) {
-	df := GenerateDockerfile("ubuntu:22.04", nil)
+	df := GenerateDockerfile("ubuntu:22.04", "root", nil)
 	if df != "FROM ubuntu:22.04\n" {
 		t.Fatalf("Dockerfile = %q, want %q", df, "FROM ubuntu:22.04\n")
+	}
+}
+
+func TestFeatureUserEnv(t *testing.T) {
+	tests := []struct {
+		name     string
+		user     string
+		wantUser string
+		wantHome string // expected fallback in the `:=` default
+	}{
+		{"named user", "vscode", "vscode", "/home/vscode"},
+		{"root", "root", "root", "/root"},
+		{"empty defaults to root", "", "root", "/root"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := strings.Join(FeatureUserEnv(tt.user), " && ")
+			for _, want := range []string{
+				"export _REMOTE_USER=" + tt.wantUser,
+				"export _CONTAINER_USER=" + tt.wantUser,
+				`export _CONTAINER_USER_HOME="$_REMOTE_USER_HOME"`,
+				"/etc/passwd",
+				"${_REMOTE_USER_HOME:=" + tt.wantHome + "}",
+			} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("FeatureUserEnv(%q) = %q, missing %q", tt.user, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestGenerateDockerfile_RemoteUserEnv(t *testing.T) {
+	features := []FeatureInstall{
+		{
+			ID:      "claude-code",
+			Files:   &FeatureFiles{InstallSh: []byte("#!/bin/sh\nsu - \"$_REMOTE_USER\"")},
+			Options: nil,
+		},
+	}
+	df := GenerateDockerfile("mcr.microsoft.com/devcontainers/base:ubuntu", "vscode", features)
+	for _, want := range []string{
+		"export _REMOTE_USER=vscode",
+		"export _CONTAINER_USER=vscode",
+		"export _REMOTE_USER_HOME=",
+		`export _CONTAINER_USER_HOME="$_REMOTE_USER_HOME"`,
+	} {
+		if !strings.Contains(df, want) {
+			t.Fatalf("Dockerfile missing %q, got %q", want, df)
+		}
+	}
+	// User vars must be exported before install.sh runs.
+	if strings.Index(df, "export _REMOTE_USER=vscode") > strings.Index(df, "./install.sh") {
+		t.Fatalf("user env must be set before install.sh, got %q", df)
 	}
 }
 
@@ -22,7 +78,7 @@ func TestGenerateDockerfile_OneFeatureNoOptions(t *testing.T) {
 			Options: nil,
 		},
 	}
-	df := GenerateDockerfile("ubuntu:22.04", features)
+	df := GenerateDockerfile("ubuntu:22.04", "root", features)
 	if !strings.HasPrefix(df, "FROM ubuntu:22.04\n") {
 		t.Fatalf("should start with FROM, got %q", df)
 	}
@@ -47,7 +103,7 @@ func TestGenerateDockerfile_MultipleFeatures(t *testing.T) {
 			Options: nil,
 		},
 	}
-	df := GenerateDockerfile("mcr.microsoft.com/devcontainers/base:ubuntu", features)
+	df := GenerateDockerfile("mcr.microsoft.com/devcontainers/base:ubuntu", "root", features)
 	if !strings.Contains(df, "COPY neovim/") {
 		t.Fatalf("should contain COPY neovim, got %q", df)
 	}
@@ -71,7 +127,7 @@ func TestGenerateDockerfile_ContainerEnv(t *testing.T) {
 			},
 		},
 	}
-	df := GenerateDockerfile("ubuntu:22.04", features)
+	df := GenerateDockerfile("ubuntu:22.04", "root", features)
 	if !strings.Contains(df, `ENV GOROOT="/usr/local/go"`) {
 		t.Fatalf("should contain ENV GOROOT, got %q", df)
 	}
@@ -88,7 +144,7 @@ func TestGenerateDockerfile_NoContainerEnv(t *testing.T) {
 			Options: nil,
 		},
 	}
-	df := GenerateDockerfile("ubuntu:22.04", features)
+	df := GenerateDockerfile("ubuntu:22.04", "root", features)
 	if strings.Contains(df, "ENV ") {
 		t.Fatalf("should not contain ENV, got %q", df)
 	}
@@ -260,6 +316,56 @@ func TestComputeImageTag(t *testing.T) {
 	}
 }
 
+func TestWriteFeatureFilesToTar(t *testing.T) {
+	t.Run("writes files with correct prefix and mode", func(t *testing.T) {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+
+		files := map[string][]byte{
+			"install.sh": []byte("#!/bin/bash\necho hi"),
+			"config.sh":  []byte("export FOO=bar"),
+		}
+
+		if err := WriteFeatureFilesToTar(tw, "my-feature", files); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		contents := ReadTarContents(t, &buf)
+		if len(contents) != 2 {
+			t.Fatalf("expected 2 entries, got %d", len(contents))
+		}
+		if _, ok := contents["my-feature/install.sh"]; !ok {
+			t.Fatal("missing my-feature/install.sh")
+		}
+		if _, ok := contents["my-feature/config.sh"]; !ok {
+			t.Fatal("missing my-feature/config.sh")
+		}
+		if string(contents["my-feature/install.sh"]) != "#!/bin/bash\necho hi" {
+			t.Fatalf("install.sh content = %q", contents["my-feature/install.sh"])
+		}
+	})
+
+	t.Run("empty files map", func(t *testing.T) {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+
+		if err := WriteFeatureFilesToTar(tw, "empty", map[string][]byte{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		contents := ReadTarContents(t, &buf)
+		if len(contents) != 0 {
+			t.Fatalf("expected 0 entries, got %d", len(contents))
+		}
+	})
+}
+
 func TestPrepareBuildContext(t *testing.T) {
 	features := []FeatureInstall{
 		{
@@ -273,7 +379,7 @@ func TestPrepareBuildContext(t *testing.T) {
 			},
 		},
 	}
-	dockerfile := GenerateDockerfile("ubuntu:22.04", features)
+	dockerfile := GenerateDockerfile("ubuntu:22.04", "root", features)
 
 	reader, err := PrepareBuildContext(dockerfile, features)
 	if err != nil {

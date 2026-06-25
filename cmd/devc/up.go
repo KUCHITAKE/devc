@@ -13,6 +13,7 @@ import (
 	"github.com/closer/devc/internal/daemon"
 	"github.com/closer/devc/internal/docker"
 	"github.com/closer/devc/internal/meta"
+	"github.com/closer/devc/internal/orchestrate"
 	"github.com/closer/devc/internal/ui"
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -94,68 +95,27 @@ func runUp(dir string, opts upOptions) error {
 		return err
 	}
 
-	// 6. Compose-based devcontainer → delegate to runUpCompose
+	// 6. Compose-based devcontainer
 	if config.ComposeFiles(ws, cfg.Raw) != nil {
-		cc, err := compose.ParseConfig(ws, cfg.Raw)
-		if err != nil {
-			return err
-		}
-		return compose.RunUpCompose(ctx, ws, cfg, cc, ucfg, compose.UpOptions{
-			Ports:   opts.ports,
-			Rebuild: opts.rebuild,
-		}, version, enterContainer)
+		return runUpCompose(ctx, ws, cfg, ucfg, opts)
 	}
 
 	// 7. Check existing container (running or stopped)
 	containerID, findErr := docker.FindContainerByWorkspace(ws)
 
 	if findErr == nil && !opts.rebuild {
-		if docker.IsContainerRunning(containerID) {
-			// Already running — attach directly
-			ui.PrintDone("Attaching to container", containerID[:12])
-		} else {
-			// Stopped container — restart it
-			ui.PrintProgress("Restarting container", containerID[:12])
-
-			// Ensure daemon socket directory exists (may be lost after host reboot)
-			sockDir := daemon.SockDir(ws.ID)
-			if err := os.MkdirAll(sockDir, 0o755); err != nil {
-				return fmt.Errorf("create daemon socket dir: %w", err)
-			}
-
+		deps := newOrchestrateDeps(ws, ucfg, nil)
+		deps.Restart = func(ctx context.Context) (string, error) {
 			cli, cliErr := docker.GetClient()
 			if cliErr != nil {
-				return fmt.Errorf("docker client: %w", cliErr)
+				return "", fmt.Errorf("docker client: %w", cliErr)
 			}
 			if err := cli.ContainerStart(ctx, containerID, dockercontainer.StartOptions{}); err != nil {
-				return fmt.Errorf("container restart: %w", err)
+				return "", fmt.Errorf("container restart: %w", err)
 			}
-			// Run postStartCommand only (container already created)
-			postStartHooks := container.ParseLifecycleHook(cfg.PostStartCommand)
-			if err := container.RunLifecycleHooks(ctx, containerID, cfg.RemoteUser, postStartHooks); err != nil {
-				ui.PrintWarn("Lifecycle hooks had errors", err.Error())
-			}
+			return containerID, nil
 		}
-
-		// Ensure devc binary is present (may be lost if /tmp was cleaned)
-		if err := meta.EnsureDevcBinary(daemon.SockDir(ws.ID)); err != nil {
-			ui.PrintWarn("devc binary restore failed", err.Error())
-		}
-
-		// Resolve remote user (fall back to root if user doesn't exist)
-		cfg.RemoteUser = docker.ResolveRemoteUser(ctx, containerID, cfg.RemoteUser)
-
-		// Setup and enter
-		if err := ui.RunWithSpinner("Setting up container", "", func() error {
-			if err := docker.SetupContainer(containerID, cfg.RemoteUser, ucfg.Dotfiles); err != nil {
-				ui.PrintWarn("Container setup had errors", err.Error())
-			}
-			return nil
-		}); err != nil {
-			return err
-		}
-
-		return enterContainer(ctx, ws, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder, nil)
+		return orchestrate.HandleExistingContainer(ctx, containerID, ws.ID, cfg, ucfg.Dotfiles, deps)
 	}
 
 	// 8. Rebuild: remove existing container + cached image
@@ -214,26 +174,85 @@ func runUp(dir string, opts upOptions) error {
 		ui.PrintWarn("devc injection failed", err.Error())
 	}
 
-	// 14. Lifecycle hooks
-	onCreateHooks := container.ParseLifecycleHook(cfg.OnCreateCommand)
-	postCreateHooks := container.ParseLifecycleHook(cfg.PostCreateCommand)
-	postStartHooks := container.ParseLifecycleHook(cfg.PostStartCommand)
-	if err := container.RunLifecycleHooks(ctx, containerID, cfg.RemoteUser, onCreateHooks, postCreateHooks, postStartHooks); err != nil {
-		ui.PrintWarn("Lifecycle hooks had errors", err.Error())
+	// 14. Finalize: lifecycle hooks, setup, enter
+	deps := newOrchestrateDeps(ws, ucfg, resolvedPorts)
+	return orchestrate.FinalizeNewContainer(ctx, containerID, ws.ID, cfg, ucfg.Dotfiles, deps)
+}
+
+func runUpCompose(ctx context.Context, ws config.Workspace, cfg *config.DevcontainerConfig, ucfg *config.UserConfig, opts upOptions) error {
+	cc, err := compose.ParseConfig(ws, cfg.Raw)
+	if err != nil {
+		return err
+	}
+	project := compose.Project(ws)
+
+	// Check existing service container
+	containerID, findErr := compose.FindServiceContainer(ctx, project, cc.Service)
+	if findErr == nil && !opts.rebuild {
+		deps := newOrchestrateDeps(ws, ucfg, nil)
+		deps.RestartLabel = "Restarting services"
+		deps.Restart = func(ctx context.Context) (string, error) {
+			// Use "up -d" instead of "start" to properly handle one-shot
+			// services (e.g. flyway) that other services depend on via
+			// service_completed_successfully. "start" fails to evaluate
+			// this condition for already-exited containers.
+			upArgs := []string{"up", "-d", "--no-recreate", "--no-build"}
+			if len(cc.RunServices) > 0 {
+				upArgs = append(upArgs, cc.RunServices...)
+			}
+			if err := compose.Exec(ctx, cc.Files, project, upArgs...); err != nil {
+				return "", fmt.Errorf("compose restart: %w", err)
+			}
+			newID, err := compose.FindServiceContainer(ctx, project, cc.Service)
+			if err != nil {
+				return "", fmt.Errorf("find container after start: %w", err)
+			}
+			return newID, nil
+		}
+		return orchestrate.HandleExistingContainer(ctx, containerID, ws.ID, cfg, ucfg.Dotfiles, deps)
 	}
 
-	// 15. Setup container with spinner
-	if err := ui.RunWithSpinner("Setting up container", "", func() error {
-		if err := docker.SetupContainer(containerID, cfg.RemoteUser, ucfg.Dotfiles); err != nil {
-			ui.PrintWarn("Container setup had errors", err.Error())
-		}
-		return nil
-	}); err != nil {
+	// Start compose services (rebuild, ports, override, up, find container)
+	containerID, resolvedPorts, err := compose.StartComposeServices(ctx, ws, cfg, cc, ucfg, compose.UpOptions{
+		Ports:   opts.ports,
+		Rebuild: opts.rebuild,
+	})
+	if err != nil {
 		return err
 	}
 
-	// 16. Enter container
-	return enterContainer(ctx, ws, containerID, cfg.RemoteUser, cfg.RemoteWorkspaceFolder, resolvedPorts)
+	// Resolve remote user (fall back to root if user doesn't exist)
+	cfg.RemoteUser = docker.ResolveRemoteUser(ctx, containerID, cfg.RemoteUser)
+
+	// Inject devc binary and metadata into container
+	allFeatures := build.MergeFeatures(ucfg.Features, cfg.Features)
+	sockDir := daemon.SockDir(ws.ID)
+	m := meta.BuildContainerMeta(ws, cfg, resolvedPorts, allFeatures, ucfg.Dotfiles, "compose", "", version)
+	if err := meta.InjectIntoContainer(ctx, containerID, ws.ID, m, sockDir); err != nil {
+		ui.PrintWarn("devc injection failed", err.Error())
+	}
+
+	// Finalize: install features, lifecycle hooks, setup, enter
+	deps := newOrchestrateDeps(ws, ucfg, resolvedPorts)
+	deps.PreHooks = func(ctx context.Context, cid string) error {
+		return compose.InstallFeaturesRuntime(ctx, cid, cfg.RemoteUser, ws.Dir, allFeatures, opts.rebuild)
+	}
+	return orchestrate.FinalizeNewContainer(ctx, containerID, ws.ID, cfg, ucfg.Dotfiles, deps)
+}
+
+// newOrchestrateDeps creates Deps with the standard implementations wired in.
+// staticPorts controls which ports are passed to enterContainer.
+func newOrchestrateDeps(ws config.Workspace, ucfg *config.UserConfig, staticPorts []string) *orchestrate.Deps {
+	return &orchestrate.Deps{
+		IsRunning:    docker.IsContainerRunning,
+		EnsureBinary: meta.EnsureDevcBinary,
+		ResolveUser:  docker.ResolveRemoteUser,
+		Setup:        docker.SetupContainer,
+		RunHooks:     container.RunLifecycleHooks,
+		Enter: func(ctx context.Context, containerID, remoteUser, workspaceFolder string) error {
+			return enterContainer(ctx, ws, containerID, remoteUser, workspaceFolder, staticPorts)
+		},
+	}
 }
 
 // enterContainer starts the daemon, runs an interactive shell, and handles rebuild requests.

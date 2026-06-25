@@ -32,7 +32,7 @@ make install  # builds in Docker, installs to ~/.local/bin/devc
 ## Usage
 
 ```bash
-devc ~/project                           # start container & attach
+devc up ~/project                        # start container & attach
 devc up -p 3000:3000 -p 5173 ~/project   # with port forwarding
 devc rebuild ~/project                   # rebuild from scratch
 devc down ~/project                      # stop (volumes preserved)

@@ -26,13 +26,44 @@ type FeatureInstall struct {
 	ContainerEnv map[string]string
 }
 
-func GenerateDockerfile(baseImage string, features []FeatureInstall) string {
+// FeatureUserEnv returns the shell statements that export the user-related
+// environment variables mandated by the devcontainer Features specification
+// (_REMOTE_USER, _CONTAINER_USER, _REMOTE_USER_HOME, _CONTAINER_USER_HOME)
+// before a feature's install.sh runs. The statements are meant to be joined
+// with " && ". Home is read from /etc/passwd (via awk, available on both
+// glibc and busybox images), falling back to /root for root or /home/<user>
+// otherwise. An empty user defaults to root.
+func FeatureUserEnv(user string) []string {
+	if user == "" {
+		user = "root"
+	}
+	defaultHome := "/home/" + user
+	if user == "root" {
+		defaultHome = "/root"
+	}
+	return []string{
+		fmt.Sprintf("export _REMOTE_USER=%s", user),
+		fmt.Sprintf("export _CONTAINER_USER=%s", user),
+		fmt.Sprintf(`export _REMOTE_USER_HOME="$(awk -F: -v u=%s '$1==u{print $6}' /etc/passwd)"`, user),
+		fmt.Sprintf(`: "${_REMOTE_USER_HOME:=%s}"`, defaultHome),
+		`export _CONTAINER_USER_HOME="$_REMOTE_USER_HOME"`,
+	}
+}
+
+func GenerateDockerfile(baseImage, remoteUser string, features []FeatureInstall) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "FROM %s\n", baseImage)
+
+	userEnv := FeatureUserEnv(remoteUser)
 
 	for _, f := range features {
 		fmt.Fprintf(&b, "COPY %s/ /tmp/build-features/%s/\n", f.ID, f.ID)
 		fmt.Fprintf(&b, "RUN cd /tmp/build-features/%s", f.ID)
+
+		// devcontainer Features spec user env vars (must precede install.sh)
+		for _, stmt := range userEnv {
+			fmt.Fprintf(&b, " \\\n    && %s", stmt)
+		}
 
 		envs := FeatureEnvVars(f.Options)
 		// Sort keys for deterministic output
@@ -128,6 +159,24 @@ func ComputeImageTag(wsID, baseImage string, features map[string]map[string]inte
 	return fmt.Sprintf("devc-%s:%s", wsID, sum[:12])
 }
 
+// WriteFeatureFilesToTar writes feature files into a tar writer with the given
+// featureID as a path prefix. Each file gets mode 0o755.
+func WriteFeatureFilesToTar(tw *tar.Writer, featureID string, files map[string][]byte) error {
+	for name, data := range files {
+		if err := tw.WriteHeader(&tar.Header{
+			Name: featureID + "/" + name,
+			Mode: 0o755,
+			Size: int64(len(data)),
+		}); err != nil {
+			return fmt.Errorf("tar header: %w", err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			return fmt.Errorf("tar write: %w", err)
+		}
+	}
+	return nil
+}
+
 func PrepareBuildContext(dockerfile string, features []FeatureInstall) (io.Reader, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -147,18 +196,8 @@ func PrepareBuildContext(dockerfile string, features []FeatureInstall) (io.Reade
 
 	// Add feature files
 	for _, f := range features {
-		for name, data := range f.Files.AllFiles {
-			hdr := &tar.Header{
-				Name: f.ID + "/" + name,
-				Mode: 0o755,
-				Size: int64(len(data)),
-			}
-			if err := tw.WriteHeader(hdr); err != nil {
-				return nil, err
-			}
-			if _, err := tw.Write(data); err != nil {
-				return nil, err
-			}
+		if err := WriteFeatureFilesToTar(tw, f.ID, f.Files.AllFiles); err != nil {
+			return nil, err
 		}
 	}
 
@@ -311,8 +350,15 @@ func BuildFeatureImage(ctx context.Context, ws config.Workspace, cfg *config.Dev
 		return installs[i].ID < installs[j].ID
 	})
 
+	// Resolve the remote user so feature install.sh scripts that rely on
+	// _REMOTE_USER (e.g. those that `su - "$_REMOTE_USER"`) work correctly.
+	remoteUser := cfg.RemoteUser
+	if remoteUser == "" {
+		remoteUser = docker.ImageDefaultUser(ctx, baseImage)
+	}
+
 	// Generate Dockerfile
-	dockerfile := GenerateDockerfile(baseImage, installs)
+	dockerfile := GenerateDockerfile(baseImage, remoteUser, installs)
 
 	// Prepare build context
 	buildCtx, err := PrepareBuildContext(dockerfile, installs)

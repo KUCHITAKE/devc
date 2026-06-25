@@ -132,6 +132,37 @@ func ContainerDefaultUser(ctx context.Context, containerID string) string {
 	return user
 }
 
+// ImageDefaultUser returns the default user configured in an image, mirroring
+// ContainerDefaultUser but for an image reference (used at build time before a
+// container exists). It checks the image's devcontainer.metadata label for
+// remoteUser first (matching the devcontainer spec), then falls back to the
+// image's USER directive, then "root".
+func ImageDefaultUser(ctx context.Context, imageRef string) string {
+	cli, err := GetClient()
+	if err != nil {
+		return "root"
+	}
+	info, err := cli.ImageInspect(ctx, imageRef)
+	if err != nil || info.Config == nil {
+		return "root"
+	}
+
+	if metadata, ok := info.Config.Labels["devcontainer.metadata"]; ok {
+		if u := RemoteUserFromMetadata(metadata); u != "" {
+			return u
+		}
+	}
+
+	user := info.Config.User
+	if user == "" {
+		return "root"
+	}
+	if i := strings.Index(user, ":"); i >= 0 {
+		user = user[:i]
+	}
+	return user
+}
+
 // RemoteUserFromMetadata extracts remoteUser from a devcontainer.metadata JSON label.
 // The label value is a JSON array of objects; the last non-empty remoteUser wins.
 func RemoteUserFromMetadata(metadata string) string {
