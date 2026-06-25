@@ -16,35 +16,42 @@ var knownSubcommands = map[string]bool{
 	"up": true, "down": true, "clean": true, "rebuild": true, "ls": true, "list": true, "ps": true, "exec": true, "help": true,
 }
 
-// rewriteLegacyArgs provides backward compatibility with the bash script's
-// argument parsing. It ensures a subcommand is always present.
+// rewriteLegacyArgs translates the bash script's flag-style aliases into
+// subcommands. A bare invocation (no args) still defaults to "up" so that
+// running devc inside a project launches it, but naming a workspace requires
+// the explicit "up" subcommand (see unknownCommandHint).
 func rewriteLegacyArgs(args []string) []string {
 	if len(args) == 0 {
 		return []string{"up"}
 	}
 
-	first := args[0]
-
-	switch {
-	case first == "-h" || first == "--help":
+	switch args[0] {
+	case "-h", "--help":
 		return append([]string{"help"}, args[1:]...)
-	case first == "-V":
+	case "-V":
 		return []string{"--version"}
-	case first == "--version":
-		return args
-	case first == "--clean":
+	case "--clean":
 		return append([]string{"clean"}, args[1:]...)
-	case first == "--rebuild":
+	case "--rebuild":
 		return append([]string{"up", "--rebuild"}, args[1:]...)
-	case knownSubcommands[first]:
-		return args
-	case strings.HasPrefix(first, "-"):
-		// Unknown flag — assume it's for "up"
-		return append([]string{"up"}, args...)
-	default:
-		// Bare path — treat as "up <path>"
-		return append([]string{"up"}, args...)
 	}
+
+	return args
+}
+
+// unknownCommandHint detects the old bare-path form (e.g. "devc ~/project")
+// and returns guidance toward the explicit "devc up <path>" form. It returns
+// ok=false for flags, known subcommands, and empty args, leaving those to
+// cobra.
+func unknownCommandHint(args []string) (detail string, ok bool) {
+	if len(args) == 0 {
+		return "", false
+	}
+	first := args[0]
+	if strings.HasPrefix(first, "-") || knownSubcommands[first] {
+		return "", false
+	}
+	return "To launch a devcontainer, run: devc up " + first, true
 }
 
 func buildRootCmd() *cobra.Command {
@@ -55,7 +62,7 @@ func buildRootCmd() *cobra.Command {
 User-specific features and dotfiles are configured in ~/.config/devc/config.json.
 No devcontainer CLI or Node.js required. Ports from forwardPorts/appPort are
 automatically published.`,
-		Example: `  devc ~/project
+		Example: `  devc up ~/project
   devc up -p 3000:3000 -p 5173:5173 ~/project
   devc rebuild .
   devc down ~/project
@@ -95,6 +102,11 @@ func main() {
 	}
 
 	os.Args = append(os.Args[:1], rewriteLegacyArgs(os.Args[1:])...)
+
+	if detail, ok := unknownCommandHint(os.Args[1:]); ok {
+		ui.PrintError("unknown command \""+os.Args[1]+"\" for \"devc\"", detail)
+		os.Exit(1)
+	}
 
 	if err := buildRootCmd().Execute(); err != nil {
 		ui.PrintError(err.Error(), "")
