@@ -205,7 +205,7 @@ func Project(ws config.Workspace) string {
 // InstallFeaturesRuntime installs OCI features inside a running container.
 // Unlike the image-based flow (which bakes features into the image at build time),
 // this runs install.sh at runtime via exec — used for compose-based devcontainers.
-func InstallFeaturesRuntime(ctx context.Context, containerID, wsDir string, features map[string]map[string]interface{}, rebuild bool) error {
+func InstallFeaturesRuntime(ctx context.Context, containerID, remoteUser, wsDir string, features map[string]map[string]interface{}, rebuild bool) error {
 	if len(features) == 0 {
 		return nil
 	}
@@ -307,6 +307,8 @@ func InstallFeaturesRuntime(ctx context.Context, containerID, wsDir string, feat
 			envs := build.FeatureEnvVars(opts)
 			var cmdParts []string
 			cmdParts = append(cmdParts, "cd "+featureDir)
+			// devcontainer Features spec user env vars (must precede install.sh)
+			cmdParts = append(cmdParts, build.FeatureUserEnv(remoteUser)...)
 			envKeys := make([]string, 0, len(envs))
 			for k := range envs {
 				envKeys = append(envKeys, k)

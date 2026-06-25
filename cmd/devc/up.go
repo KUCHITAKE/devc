@@ -227,7 +227,7 @@ func runUpCompose(ctx context.Context, ws config.Workspace, cfg *config.Devconta
 	// Finalize: install features, lifecycle hooks, setup, enter
 	deps := newOrchestrateDeps(ws, ucfg, resolvedPorts)
 	deps.PreHooks = func(ctx context.Context, cid string) error {
-		return compose.InstallFeaturesRuntime(ctx, cid, ws.Dir, allFeatures, opts.rebuild)
+		return compose.InstallFeaturesRuntime(ctx, cid, cfg.RemoteUser, ws.Dir, allFeatures, opts.rebuild)
 	}
 	return orchestrate.FinalizeNewContainer(ctx, containerID, ws.ID, cfg, ucfg.Dotfiles, deps)
 }
