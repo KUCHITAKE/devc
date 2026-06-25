@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	dockercontainer "github.com/docker/docker/api/types/container"
 )
 
 func TestFormatUptime(t *testing.T) {
@@ -30,17 +32,85 @@ func TestFormatUptime(t *testing.T) {
 
 func TestFormatPorts(t *testing.T) {
 	tests := []struct {
-		name string
-		want string
+		name  string
+		ports []dockercontainer.Port
+		want  string
 	}{
-		{"empty", "-"},
+		{"nil", nil, "-"},
+		{"empty slice", []dockercontainer.Port{}, "-"},
+		{"only private port (no public)", []dockercontainer.Port{
+			{PrivatePort: 3000, PublicPort: 0},
+		}, "-"},
+		{"same public and private", []dockercontainer.Port{
+			{PublicPort: 3000, PrivatePort: 3000},
+		}, "3000"},
+		{"different public and private", []dockercontainer.Port{
+			{PublicPort: 8080, PrivatePort: 3000},
+		}, "8080→3000"},
+		{"multiple ports", []dockercontainer.Port{
+			{PublicPort: 3000, PrivatePort: 3000},
+			{PublicPort: 5432, PrivatePort: 5432},
+		}, "3000, 5432"},
+		{"deduplication", []dockercontainer.Port{
+			{PublicPort: 3000, PrivatePort: 3000},
+			{PublicPort: 3000, PrivatePort: 3000},
+		}, "3000"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := formatPorts(nil)
+			got := formatPorts(tt.ports)
 			if got != tt.want {
-				t.Errorf("formatPorts(nil) = %q, want %q", got, tt.want)
+				t.Errorf("formatPorts() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestContainerDisplayName(t *testing.T) {
+	tests := []struct {
+		name string
+		c    dockercontainer.Summary
+		want string
+	}{
+		{
+			"devc container",
+			dockercontainer.Summary{Names: []string{"/devc-myproject"}},
+			"myproject",
+		},
+		{
+			"compose container",
+			dockercontainer.Summary{
+				Names:  []string{"/myproject-app-1"},
+				Labels: map[string]string{"com.docker.compose.project": "myproject", "com.docker.compose.service": "app"},
+			},
+			"myproject/app",
+		},
+		{
+			"compose container no service",
+			dockercontainer.Summary{
+				Names:  []string{"/myproject-1"},
+				Labels: map[string]string{"com.docker.compose.project": "myproject"},
+			},
+			"myproject",
+		},
+		{
+			"generic container",
+			dockercontainer.Summary{Names: []string{"/some-container"}},
+			"some-container",
+		},
+		{
+			"no names fallback to ID",
+			dockercontainer.Summary{ID: "abcdef123456789abcdef"},
+			"abcdef123456",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := containerDisplayName(tt.c)
+			if got != tt.want {
+				t.Errorf("containerDisplayName() = %q, want %q", got, tt.want)
 			}
 		})
 	}

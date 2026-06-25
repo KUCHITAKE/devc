@@ -3,6 +3,8 @@ package orchestrate
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/closer/devc/internal/config"
@@ -50,6 +52,33 @@ func newMockDeps(log *callLog, running bool) *Deps {
 			log.enteredContainer = containerID
 			return nil
 		},
+	}
+}
+
+func TestHandleExistingContainer_RestartError(t *testing.T) {
+	log := &callLog{}
+	deps := newMockDeps(log, false)
+	deps.Restart = func(ctx context.Context) (string, error) {
+		return "", fmt.Errorf("compose start failed")
+	}
+
+	cfg := &config.DevcontainerConfig{
+		RemoteUser:            "vscode",
+		RemoteWorkspaceFolder: "/workspaces/test",
+	}
+
+	err := HandleExistingContainer(context.Background(), "abcdef123456abcdef", "ws-1", cfg, nil, deps)
+	if err == nil {
+		t.Fatal("expected error from Restart")
+	}
+	if !strings.Contains(err.Error(), "compose start failed") {
+		t.Errorf("error = %q, want to contain 'compose start failed'", err.Error())
+	}
+	if log.ensuredBinary {
+		t.Error("should not ensure binary after restart failure")
+	}
+	if log.enteredContainer != "" {
+		t.Error("should not enter container after restart failure")
 	}
 }
 
@@ -106,6 +135,133 @@ func TestHandleExistingContainer_Stopped(t *testing.T) {
 	}
 	if log.lifecycleCount == 0 {
 		t.Error("should run postStartCommand hooks")
+	}
+}
+
+func TestHandleExistingContainer_ResolvedUserPropagation(t *testing.T) {
+	log := &callLog{}
+	deps := newMockDeps(log, true)
+	deps.ResolveUser = func(ctx context.Context, containerID, remoteUser string) string {
+		// Simulate fallback to root
+		return "root"
+	}
+
+	cfg := &config.DevcontainerConfig{
+		RemoteUser:            "nonexistent",
+		RemoteWorkspaceFolder: "/workspaces/test",
+	}
+
+	err := HandleExistingContainer(context.Background(), "abcdef123456abcdef", "ws-1", cfg, nil, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// cfg.RemoteUser should be updated
+	if cfg.RemoteUser != "root" {
+		t.Errorf("cfg.RemoteUser = %q, want %q", cfg.RemoteUser, "root")
+	}
+	// Setup should use resolved user
+	if log.setupUser != "root" {
+		t.Errorf("Setup user = %q, want %q", log.setupUser, "root")
+	}
+	// Enter should use resolved user
+	if log.enteredUser != "root" {
+		t.Errorf("Enter user = %q, want %q", log.enteredUser, "root")
+	}
+}
+
+func TestHandleExistingContainer_DotfilesPropagation(t *testing.T) {
+	var setupDotfiles []string
+	log := &callLog{}
+	deps := newMockDeps(log, true)
+	deps.Setup = func(containerID, remoteUser string, dotfiles []string) error {
+		setupDotfiles = dotfiles
+		return nil
+	}
+
+	cfg := &config.DevcontainerConfig{
+		RemoteUser:            "vscode",
+		RemoteWorkspaceFolder: "/workspaces/test",
+	}
+	dotfiles := []string{".bashrc", ".gitconfig"}
+
+	err := HandleExistingContainer(context.Background(), "abcdef123456abcdef", "ws-1", cfg, dotfiles, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(setupDotfiles) != 2 || setupDotfiles[0] != ".bashrc" || setupDotfiles[1] != ".gitconfig" {
+		t.Errorf("Setup dotfiles = %v, want [.bashrc .gitconfig]", setupDotfiles)
+	}
+}
+
+func TestHandleExistingContainer_StoppedRunHooksUsesNewContainerID(t *testing.T) {
+	var hookContainerID string
+	log := &callLog{}
+	deps := newMockDeps(log, false)
+	deps.RunHooks = func(ctx context.Context, containerID, user string, hooks ...[]container.LifecycleCommand) error {
+		hookContainerID = containerID
+		log.lifecycleCount += len(hooks)
+		return nil
+	}
+
+	cfg := &config.DevcontainerConfig{
+		RemoteUser:            "vscode",
+		RemoteWorkspaceFolder: "/workspaces/test",
+		PostStartCommand:      json.RawMessage(`"echo start"`),
+	}
+
+	err := HandleExistingContainer(context.Background(), "oldcontainer12345678", "ws-1", cfg, nil, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if hookContainerID != "newcontainer123456" {
+		t.Errorf("RunHooks containerID = %q, want %q", hookContainerID, "newcontainer123456")
+	}
+}
+
+func TestHandleExistingContainer_StoppedHookCount(t *testing.T) {
+	log := &callLog{}
+	deps := newMockDeps(log, false)
+
+	cfg := &config.DevcontainerConfig{
+		RemoteUser:            "vscode",
+		RemoteWorkspaceFolder: "/workspaces/test",
+		PostStartCommand:      json.RawMessage(`"echo start"`),
+	}
+
+	err := HandleExistingContainer(context.Background(), "abcdef123456abcdef", "ws-1", cfg, nil, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Only postStartCommand should be run (1 hook group)
+	if log.lifecycleCount != 1 {
+		t.Errorf("lifecycle hook groups = %d, want 1 (postStart only)", log.lifecycleCount)
+	}
+}
+
+func TestFinalizeNewContainer_LifecycleHookCount(t *testing.T) {
+	log := &callLog{}
+	deps := newMockDeps(log, false)
+
+	cfg := &config.DevcontainerConfig{
+		RemoteUser:            "vscode",
+		RemoteWorkspaceFolder: "/workspaces/proj",
+		OnCreateCommand:       json.RawMessage(`"echo create"`),
+		PostCreateCommand:     json.RawMessage(`"echo postcreate"`),
+		PostStartCommand:      json.RawMessage(`"echo start"`),
+	}
+
+	err := FinalizeNewContainer(context.Background(), "abcdef123456abcdef", "ws-1", cfg, nil, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// onCreate + postCreate + postStart = 3 hook groups
+	if log.lifecycleCount != 3 {
+		t.Errorf("lifecycle hook groups = %d, want 3 (onCreate + postCreate + postStart)", log.lifecycleCount)
 	}
 }
 

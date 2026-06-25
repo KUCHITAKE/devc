@@ -192,8 +192,16 @@ func runUpCompose(ctx context.Context, ws config.Workspace, cfg *config.Devconta
 		deps := newOrchestrateDeps(ws, ucfg, nil)
 		deps.RestartLabel = "Restarting services"
 		deps.Restart = func(ctx context.Context) (string, error) {
-			if err := compose.Exec(ctx, cc.Files, project, "start"); err != nil {
-				return "", fmt.Errorf("compose start: %w", err)
+			// Use "up -d" instead of "start" to properly handle one-shot
+			// services (e.g. flyway) that other services depend on via
+			// service_completed_successfully. "start" fails to evaluate
+			// this condition for already-exited containers.
+			upArgs := []string{"up", "-d", "--no-recreate", "--no-build"}
+			if len(cc.RunServices) > 0 {
+				upArgs = append(upArgs, cc.RunServices...)
+			}
+			if err := compose.Exec(ctx, cc.Files, project, upArgs...); err != nil {
+				return "", fmt.Errorf("compose restart: %w", err)
 			}
 			newID, err := compose.FindServiceContainer(ctx, project, cc.Service)
 			if err != nil {

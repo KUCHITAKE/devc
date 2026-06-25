@@ -50,6 +50,31 @@ func TestPrintFunctions_NonTTY(t *testing.T) {
 	}
 }
 
+func TestStripANSI(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain text", "hello world", "hello world"},
+		{"color codes", "\x1b[31mred\x1b[0m text", "red text"},
+		{"cursor movement", "\x1b[2Ahello", "hello"},
+		{"carriage return", "line1\rline2", "line1line2"},
+		{"OSC sequence", "\x1b]0;title\x07text", "text"},
+		{"empty string", "", ""},
+		{"mixed", "\x1b[1m\x1b[32mgreen bold\x1b[0m plain", "green bold plain"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripANSI(tt.input)
+			if got != tt.want {
+				t.Errorf("StripANSI(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDrainDockerOutput_Success(t *testing.T) {
 	lines := []string{
 		`{"stream":"Step 1/3 : FROM ubuntu\n"}`,
