@@ -262,3 +262,48 @@ func TestComposeProject(t *testing.T) {
 		t.Fatalf("Project() = %q, want %q", got, want)
 	}
 }
+
+func TestParsePublishedPorts(t *testing.T) {
+	// Shape emitted by `docker compose config --format json`: published is a
+	// string, target a number; one service leaves published unset (random host
+	// port) and must be skipped.
+	in := []byte(`{
+	  "services": {
+	    "envoy": {"ports": [{"mode":"ingress","target":8765,"published":"8765","protocol":"tcp"}]},
+	    "pgweb": {"ports": [{"mode":"ingress","target":8081,"published":"8082","protocol":"tcp"}]},
+	    "internal": {"ports": [{"mode":"ingress","target":9000,"protocol":"tcp"}]}
+	  }
+	}`)
+
+	got, err := parsePublishedPorts(in)
+	if err != nil {
+		t.Fatalf("parsePublishedPorts: %v", err)
+	}
+	// Services are visited in sorted order: envoy, internal, pgweb.
+	want := []string{"8765:8765", "8082:8081"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestParsePublishedPorts_NumberPublished(t *testing.T) {
+	// Some compose versions emit published as a bare number.
+	in := []byte(`{"services": {"web": {"ports": [{"target":80,"published":3000}]}}}`)
+	got, err := parsePublishedPorts(in)
+	if err != nil {
+		t.Fatalf("parsePublishedPorts: %v", err)
+	}
+	if len(got) != 1 || got[0] != "3000:80" {
+		t.Fatalf("got %v, want [3000:80]", got)
+	}
+}
+
+func TestParsePublishedPorts_NoServices(t *testing.T) {
+	got, err := parsePublishedPorts([]byte(`{"services": {}}`))
+	if err != nil {
+		t.Fatalf("parsePublishedPorts: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected no ports, got %v", got)
+	}
+}

@@ -202,6 +202,81 @@ func Project(ws config.Workspace) string {
 	return ws.ID + "_devcontainer"
 }
 
+// PublishedHostPorts resolves the compose files via `docker compose config` and
+// returns a host:container spec for every port the project would publish. These
+// bindings are fixed — compose does not auto-remap them — so callers should
+// treat them as explicit host port reservations when checking for conflicts.
+func PublishedHostPorts(ctx context.Context, files []string, project string) ([]string, error) {
+	cmdArgs := []string{"compose"}
+	for _, f := range files {
+		cmdArgs = append(cmdArgs, "-f", f)
+	}
+	cmdArgs = append(cmdArgs, "-p", project, "config", "--format", "json")
+
+	out, err := exec.CommandContext(ctx, "docker", cmdArgs...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker compose config: %w", err)
+	}
+	return parsePublishedPorts(out)
+}
+
+// parsePublishedPorts extracts host:container specs from the JSON emitted by
+// `docker compose config --format json`. Ports without a published host port
+// (Docker assigns a random one) are skipped, since they cannot deterministically
+// conflict.
+func parsePublishedPorts(jsonBytes []byte) ([]string, error) {
+	var parsed struct {
+		Services map[string]struct {
+			Ports []struct {
+				Published json.RawMessage `json:"published"`
+				Target    json.RawMessage `json:"target"`
+			} `json:"ports"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
+		return nil, fmt.Errorf("parse compose config: %w", err)
+	}
+
+	svcNames := make([]string, 0, len(parsed.Services))
+	for name := range parsed.Services {
+		svcNames = append(svcNames, name)
+	}
+	sort.Strings(svcNames)
+
+	var specs []string
+	for _, name := range svcNames {
+		for _, p := range parsed.Services[name].Ports {
+			host := jsonNumberOrString(p.Published)
+			if host == "" {
+				continue
+			}
+			target := jsonNumberOrString(p.Target)
+			if target == "" {
+				target = host
+			}
+			specs = append(specs, host+":"+target)
+		}
+	}
+	return specs, nil
+}
+
+// jsonNumberOrString decodes a JSON value that may be either a quoted string or
+// a bare number into its string form. It returns "" for null/empty/other.
+func jsonNumberOrString(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n.String()
+	}
+	return ""
+}
+
 // DownArgs returns the `docker compose` arguments used by `devc down`.
 //
 // It uses `down --remove-orphans` rather than `stop` so that the networks

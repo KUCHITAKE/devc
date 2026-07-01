@@ -41,6 +41,50 @@ func ExtractCredentials() error {
 	return nil
 }
 
+// ListDevcContainers returns containers managed by devc, identified by the
+// devcontainer.local_folder label. When all is true, stopped containers are
+// included; otherwise only running ones are returned.
+func ListDevcContainers(ctx context.Context, all bool) ([]container.Summary, error) {
+	cli, err := GetClient()
+	if err != nil {
+		return nil, fmt.Errorf("docker client: %w", err)
+	}
+	return cli.ContainerList(ctx, container.ListOptions{
+		All: all,
+		Filters: filters.NewArgs(
+			filters.Arg("label", "devcontainer.local_folder"),
+		),
+	})
+}
+
+// ListComposeContainers returns containers that belong to a docker compose
+// project (labeled com.docker.compose.project). Callers filter these down to
+// devc-managed projects. When all is true, stopped containers are included.
+func ListComposeContainers(ctx context.Context, all bool) ([]container.Summary, error) {
+	cli, err := GetClient()
+	if err != nil {
+		return nil, fmt.Errorf("docker client: %w", err)
+	}
+	return cli.ContainerList(ctx, container.ListOptions{
+		All: all,
+		Filters: filters.NewArgs(
+			filters.Arg("label", "com.docker.compose.project"),
+		),
+	})
+}
+
+// ListRunningContainers returns all running containers. It is used by the
+// pre-flight port check, which must consider every port holder — including
+// compose service containers that do not carry the devcontainer.local_folder
+// label.
+func ListRunningContainers(ctx context.Context) ([]container.Summary, error) {
+	cli, err := GetClient()
+	if err != nil {
+		return nil, fmt.Errorf("docker client: %w", err)
+	}
+	return cli.ContainerList(ctx, container.ListOptions{All: false})
+}
+
 // IsContainerRunning checks if a specific container is running.
 func IsContainerRunning(containerID string) bool {
 	cli, err := GetClient()

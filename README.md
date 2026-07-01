@@ -54,6 +54,7 @@ devc clean ~/project                     # remove container & volumes
 |------|-------------|
 | `-p, --publish` | Publish ports (e.g., `-p 3000:3000`). Repeatable |
 | `--rebuild` | Force rebuild, discard cached image |
+| `-f, --force` | Launch even if a host port conflicts with a running workspace |
 
 ### Port resolution
 
@@ -64,6 +65,13 @@ Ports are collected from multiple sources (CLI flags take precedence):
 3. `appPort` in devcontainer.json
 
 Bare ports (e.g., `3000`) auto-detect an available host port, incrementing if the preferred port is in use.
+
+Before starting, `up` checks the ports it is about to publish (including the
+compose services' own ports) against other running devc workspaces — handy when
+the same repo is checked out into several directories. A conflict on a fixed
+`host:container` port aborts the launch (override with `--force`); a bare port
+just remaps as above. `ls`/`ps` lists both image- and compose-based workspaces,
+one row per workspace.
 
 ## In-container commands
 
