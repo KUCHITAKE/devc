@@ -101,6 +101,15 @@ tags: [tool, cli, infrastructure, docker, devcontainer]
 - **REQ-014**: 裸のポート（`host:container` のコロン形式でない）は、要求ポートと同値の空きホスト
   ポートに解決しなければならない。占有時は最大100回まで1ずつインクリメントし、いずれも空きが
   なければ警告して裸ポートを使用しなければならない。
+- **REQ-014a**: `up`（および `rebuild`）はコンテナを起動する前に、公開しようとするホストポートが
+  他の稼働中 devc ワークスペースと衝突しないか検査しなければならない。検査対象のポートは
+  `forwardPorts`/`appPort`/`-p` に加え、Compose モードでは `docker compose config` で解決した
+  各サービスの公開ポートを含める。衝突相手は `devcontainer.local_folder` ラベルを持つコンテナ、
+  および `*_devcontainer` という Compose プロジェクトに属するコンテナから収集し、自ワークスペース
+  （同一パスまたは同一 Compose プロジェクト）は除外する。裸ポートの衝突は警告のみ（REQ-014 により
+  リマップされる）、`host:container` 形式で固定されたポートの衝突は起動を中断しなければならない。
+  ただし `-f`/`--force` 指定時は中断せず続行する。加えて、同名（同一ベース名）のワークスペースが
+  稼働中であれば情報として通知しなければならない。
 - **REQ-015**: イメージモードでは、ベースイメージ、feature 集合、ローカル feature の内容ダイジェスト
   から導出した決定的なイメージタグ `devc-{ワークスペースID}:{12桁16進}` を計算しなければならない。
 - **REQ-016**: 計算したタグのイメージがローカルに既存で `--rebuild` 未指定なら、再ビルドせずに
@@ -138,12 +147,20 @@ tags: [tool, cli, infrastructure, docker, devcontainer]
   コンテナでコマンドを実行しなければならない。コマンド無指定なら `bash -l`、指定ありなら
   `bash -lc "<command>"` を実行する。ワークスペースは位置引数、`--dir`/`-d`、またはコマンドの
   前に置く `--` 区切りのいずれでも指定できなければならない。
-- **REQ-028**: `down` はコンテナを停止（イメージモード）または `docker compose stop`（Compose
-  モード）し、ボリュームを保持しなければならない。
+- **REQ-028**: `down` はイメージモードではコンテナを停止し、Compose モードでは
+  `docker compose down --remove-orphans` を実行しなければならない。いずれの場合もボリュームは
+  保持する。Compose モードで `stop` ではなく `down` を用いるのは、プロジェクトが作成した
+  ネットワークを削除するためである（`stop` はネットワークを残すため、ワークスペースをまたいで
+  ネットワークが蓄積し Docker のデフォルト IPv4 アドレスプールを枯渇させる。また固定サブネットを
+  持つネットワークは同一サブネットを要求する他プロジェクトの起動を阻害する）。
 - **REQ-029**: `clean` はコンテナとそのボリュームを削除しなければならない（イメージモード: 強制
   削除、Compose モード: `docker compose down -v --remove-orphans`）。
-- **REQ-030**: `ls`（別名 `list`, `ps`）は `devcontainer.local_folder` ラベルを持つコンテナを
-  作成時刻の降順で一覧表示し、ワークスペース、ステータス、ポート、稼働時間、パスを表示しなければならない。
+- **REQ-030**: `ls`（別名 `list`, `ps`）は devc 管理のコンテナを作成時刻の降順で1ワークスペース
+  1行に一覧表示し、ワークスペース、ステータス、ポート、稼働時間、パスを表示しなければならない。
+  対象は `devcontainer.local_folder` ラベルを持つイメージ型コンテナと、`*_devcontainer` という
+  Compose プロジェクトに属するコンテナの両方とする。Compose ワークスペースは複数サービスコンテナを
+  1行に集約し、ポートは全サービスの和集合、ステータスは1つでも稼働中なら `running`（全停止時は最新
+  コンテナの状態）、パスは Compose の `working_dir` ラベルから復元しなければならない。
 - **REQ-031**: コンテナ内 `port` コマンドは、`<port>` または `<host>:<container>` 形式を受け付け、
   デーモンにポートフォワードを要求しなければならない。
 - **REQ-032**: コンテナ内 `host` コマンドはデーモンにホスト上でのコマンド実行を要求し、その
@@ -210,9 +227,9 @@ tags: [tool, cli, infrastructure, docker, devcontainer]
 
 | コマンド | 概要 | フラグ／引数 |
 |----------|------|--------------|
-| `up` | コンテナを起動して接続 | `[-p host:container]…`, `--rebuild`, `[workspace-dir]` |
-| `rebuild` | `up --rebuild` と等価 | `[-p host:container]…`, `[workspace-dir]` |
-| `down` | コンテナ停止（ボリューム保持） | `[workspace-dir]` |
+| `up` | コンテナを起動して接続 | `[-p host:container]…`, `--rebuild`, `-f/--force`, `[workspace-dir]` |
+| `rebuild` | `up --rebuild` と等価 | `[-p host:container]…`, `-f/--force`, `[workspace-dir]` |
+| `down` | コンテナ・ネットワーク削除（ボリューム保持） | `[workspace-dir]` |
 | `clean` | コンテナとボリュームを削除 | `[workspace-dir]` |
 | `ls`（`list`, `ps`） | devc コンテナ一覧 | なし |
 | `exec` | コンテナ内でコマンド実行 | `-d/--dir <path>`, `[workspace-dir] [-- command…]` |
@@ -370,6 +387,13 @@ tags: [tool, cli, infrastructure, docker, devcontainer]
   空きポート（3001, 3002, …）を選択する。（`TestResolvePort`）
 - **AC-005**: `forwardPorts`、`appPort`、`-p` がすべてポートを指定するとき、CLI ポートが優先され
   重複は排除される。（`TestCollectPorts`）
+- **AC-005a**: 別ディレクトリの同一 repo が `host:container` 固定ポートを公開して稼働中のとき、
+  `devc up` は起動前にそのポート衝突を検出し、犯人ワークスペースを示して中断する。`-f/--force`
+  を付けると同じ状況でも続行する。裸ポートの衝突は警告のみで続行する。
+  （`internal/preflight` の `TestAnalyze_*`, `TestToRunningWorkspaces_*`）
+- **AC-005b**: Compose ワークスペースが複数サービスコンテナで稼働中のとき、`devc ls`/`ps` は
+  それらを1行に集約し、全サービスの公開ポートを和集合で表示する。
+  （`TestBuildWorkspaceRows`, `TestBuildWorkspaceRows_ComposeAllStopped`）
 - **AC-006**: `dockerComposeFile` と `service` を持つ `devcontainer.json` で `devc up` を実行すると、
   `docker compose up -d --build` でサービスを起動し、オーバーライドファイルを生成し、feature を
   実行時にインストールする。（`TestParseComposeConfig_*`, `TestWriteComposeOverride_*`）
@@ -444,7 +468,7 @@ tags: [tool, cli, infrastructure, docker, devcontainer]
 ### 外部システム
 - **EXT-001**：Docker Engine。REST API 経由でコンテナの build/create/start/stop/remove、exec、
   inspect、イメージ操作を行う。
-- **EXT-002**：`docker compose` CLI。Compose モードのサービス管理（`up`, `stop`, `down`）を行う。
+- **EXT-002**：`docker compose` CLI。Compose モードのサービス管理（`up`, `down`）を行う。
 
 ### サードパーティサービス
 - **SVC-001**：OCI レジストリ（例: `ghcr.io`）。feature のトークン発行、マニフェスト取得、blob

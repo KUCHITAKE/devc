@@ -23,6 +23,7 @@ import (
 type upOptions struct {
 	ports   []string
 	rebuild bool
+	force   bool
 }
 
 func newUpCmd() *cobra.Command {
@@ -41,11 +42,12 @@ func newUpCmd() *cobra.Command {
 	}
 	cmd.Flags().StringArrayVarP(&opts.ports, "publish", "p", nil, "Publish port (e.g. -p 3000:3000). Repeatable.")
 	cmd.Flags().BoolVar(&opts.rebuild, "rebuild", false, "Rebuild the container from scratch")
+	cmd.Flags().BoolVarP(&opts.force, "force", "f", false, "Launch even if a host port conflicts with a running workspace")
 	return cmd
 }
 
 func newRebuildCmd() *cobra.Command {
-	var ports []string
+	opts := upOptions{rebuild: true}
 	cmd := &cobra.Command{
 		Use:   "rebuild [flags] [workspace-dir]",
 		Short: "Rebuild and enter the devcontainer",
@@ -55,10 +57,11 @@ func newRebuildCmd() *cobra.Command {
 			if len(args) > 0 {
 				dir = args[0]
 			}
-			return runUp(dir, upOptions{ports: ports, rebuild: true})
+			return runUp(dir, opts)
 		},
 	}
-	cmd.Flags().StringArrayVarP(&ports, "publish", "p", nil, "Publish port (e.g. -p 3000:3000). Repeatable.")
+	cmd.Flags().StringArrayVarP(&opts.ports, "publish", "p", nil, "Publish port (e.g. -p 3000:3000). Repeatable.")
+	cmd.Flags().BoolVarP(&opts.force, "force", "f", false, "Launch even if a host port conflicts with a running workspace")
 	return cmd
 }
 
@@ -95,12 +98,19 @@ func runUp(dir string, opts upOptions) error {
 		return err
 	}
 
-	// 6. Compose-based devcontainer
+	// 6. Pre-flight: warn about conflicts with other running devc workspaces.
+	// Runs before we reuse an existing container too, but excludes the current
+	// workspace by path so a plain restart never reports a conflict.
+	if err := preflightCheck(ctx, ws, cfg, opts); err != nil {
+		return err
+	}
+
+	// 7. Compose-based devcontainer
 	if config.ComposeFiles(ws, cfg.Raw) != nil {
 		return runUpCompose(ctx, ws, cfg, ucfg, opts)
 	}
 
-	// 7. Check existing container (running or stopped)
+	// 8. Check existing container (running or stopped)
 	containerID, findErr := docker.FindContainerByWorkspace(ws)
 
 	if findErr == nil && !opts.rebuild {
@@ -118,7 +128,7 @@ func runUp(dir string, opts upOptions) error {
 		return orchestrate.HandleExistingContainer(ctx, containerID, ws.ID, cfg, ucfg.Dotfiles, deps)
 	}
 
-	// 8. Rebuild: remove existing container + cached image
+	// 9. Rebuild: remove existing container + cached image
 	if opts.rebuild {
 		if containerID, err := docker.FindContainerByWorkspace(ws); err == nil {
 			ui.PrintProgress("Removing container", containerID[:12])
@@ -142,14 +152,14 @@ func runUp(dir string, opts upOptions) error {
 		}
 	}
 
-	// 9. Collect and resolve ports
+	// 10. Collect and resolve ports
 	ports := config.CollectPorts(cfg.Raw, opts.ports)
 	resolvedPorts := config.ResolveAllPorts(ports)
 	if len(resolvedPorts) > 0 {
 		ui.PrintDone("Ports", strings.Join(resolvedPorts, ", "))
 	}
 
-	// 10. Build image (with spinner for feature pull, build output streamed)
+	// 11. Build image (with spinner for feature pull, build output streamed)
 	ui.PrintProgress("Building image", ws.Name)
 	imageTag, err := build.BuildFeatureImage(ctx, ws, cfg, ucfg.Features, opts.rebuild)
 	if err != nil {
@@ -157,24 +167,24 @@ func runUp(dir string, opts upOptions) error {
 	}
 	ui.PrintDone("Image built", imageTag)
 
-	// 11. Create and start container
+	// 12. Create and start container
 	sockDir := daemon.SockDir(ws.ID)
 	containerID, err = container.CreateAndStartContainer(ctx, ws, cfg, imageTag, resolvedPorts, config.BuildHostMounts(ucfg, ws.ID, sockDir))
 	if err != nil {
 		return fmt.Errorf("container create: %w", err)
 	}
 
-	// 12. Resolve remote user (fall back to root if user doesn't exist)
+	// 13. Resolve remote user (fall back to root if user doesn't exist)
 	cfg.RemoteUser = docker.ResolveRemoteUser(ctx, containerID, cfg.RemoteUser)
 
-	// 13. Inject devc binary and metadata into container
+	// 14. Inject devc binary and metadata into container
 	allFeatures := build.MergeFeatures(ucfg.Features, cfg.Features)
 	m := meta.BuildContainerMeta(ws, cfg, resolvedPorts, allFeatures, ucfg.Dotfiles, "image", imageTag, version)
 	if err := meta.InjectIntoContainer(ctx, containerID, ws.ID, m, sockDir); err != nil {
 		ui.PrintWarn("devc injection failed", err.Error())
 	}
 
-	// 14. Finalize: lifecycle hooks, setup, enter
+	// 15. Finalize: lifecycle hooks, setup, enter
 	deps := newOrchestrateDeps(ws, ucfg, resolvedPorts)
 	return orchestrate.FinalizeNewContainer(ctx, containerID, ws.ID, cfg, ucfg.Dotfiles, deps)
 }

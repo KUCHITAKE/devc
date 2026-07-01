@@ -148,8 +148,11 @@ func newDotfilesCmd() *cobra.Command {
 					continue
 				}
 
-				// Create symlink
-				_ = os.Remove(target)
+				// Create symlink. RemoveAll (not Remove) so a populated
+				// directory pre-created by a devcontainer feature — e.g.
+				// claude-code creating ~/.claude — is cleared first;
+				// otherwise the symlink lands inside it.
+				_ = os.RemoveAll(target)
 				if err := os.Symlink(staging, target); err != nil {
 					ui.PrintWarn("Failed", fmt.Sprintf("%s: %v", rel, err))
 				} else {

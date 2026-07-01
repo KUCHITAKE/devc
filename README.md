@@ -35,7 +35,7 @@ make install  # builds in Docker, installs to ~/.local/bin/devc
 devc up ~/project                        # start container & attach
 devc up -p 3000:3000 -p 5173 ~/project   # with port forwarding
 devc rebuild ~/project                   # rebuild from scratch
-devc down ~/project                      # stop (volumes preserved)
+devc down ~/project                      # remove containers & networks (volumes preserved)
 devc clean ~/project                     # remove container & volumes
 ```
 
@@ -44,7 +44,7 @@ devc clean ~/project                     # remove container & volumes
 | Command | Description |
 |---------|-------------|
 | `up [flags] [dir]` | Start container and attach (default) |
-| `down [dir]` | Stop container, keep volumes |
+| `down [dir]` | Remove containers & networks, keep volumes |
 | `clean [dir]` | Remove container and volumes |
 | `rebuild [dir]` | Alias for `up --rebuild` |
 
@@ -54,6 +54,7 @@ devc clean ~/project                     # remove container & volumes
 |------|-------------|
 | `-p, --publish` | Publish ports (e.g., `-p 3000:3000`). Repeatable |
 | `--rebuild` | Force rebuild, discard cached image |
+| `-f, --force` | Launch even if a host port conflicts with a running workspace |
 
 ### Port resolution
 
@@ -64,6 +65,13 @@ Ports are collected from multiple sources (CLI flags take precedence):
 3. `appPort` in devcontainer.json
 
 Bare ports (e.g., `3000`) auto-detect an available host port, incrementing if the preferred port is in use.
+
+Before starting, `up` checks the ports it is about to publish (including the
+compose services' own ports) against other running devc workspaces — handy when
+the same repo is checked out into several directories. A conflict on a fixed
+`host:container` port aborts the launch (override with `--force`); a bare port
+just remaps as above. `ls`/`ps` lists both image- and compose-based workspaces,
+one row per workspace.
 
 ## In-container commands
 

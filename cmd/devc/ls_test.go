@@ -67,51 +67,82 @@ func TestFormatPorts(t *testing.T) {
 	}
 }
 
-func TestContainerDisplayName(t *testing.T) {
-	tests := []struct {
-		name string
-		c    dockercontainer.Summary
-		want string
-	}{
+func TestBuildWorkspaceRows(t *testing.T) {
+	containers := []dockercontainer.Summary{
+		// Image-based workspace: single container.
 		{
-			"devc container",
-			dockercontainer.Summary{Names: []string{"/devc-myproject"}},
-			"myproject",
+			Labels:  map[string]string{"devcontainer.local_folder": "/home/user/app"},
+			State:   "running",
+			Created: 100,
+			Ports:   []dockercontainer.Port{{PublicPort: 3000, PrivatePort: 3000}},
 		},
+		// Compose workspace: two services, one running, one exited. They must
+		// collapse into a single row with the union of ports and "running".
 		{
-			"compose container",
-			dockercontainer.Summary{
-				Names:  []string{"/myproject-app-1"},
-				Labels: map[string]string{"com.docker.compose.project": "myproject", "com.docker.compose.service": "app"},
+			Labels: map[string]string{
+				"com.docker.compose.project":             "web-abc123_devcontainer",
+				"com.docker.compose.project.working_dir": "/home/user/web/.devcontainer",
 			},
-			"myproject/app",
+			State:   "running",
+			Created: 200,
+			Ports:   []dockercontainer.Port{{PublicPort: 8080, PrivatePort: 80}},
 		},
 		{
-			"compose container no service",
-			dockercontainer.Summary{
-				Names:  []string{"/myproject-1"},
-				Labels: map[string]string{"com.docker.compose.project": "myproject"},
+			Labels: map[string]string{
+				"com.docker.compose.project":             "web-abc123_devcontainer",
+				"com.docker.compose.project.working_dir": "/home/user/web/.devcontainer",
 			},
-			"myproject",
+			State:   "exited",
+			Created: 150,
+			Ports:   []dockercontainer.Port{{PublicPort: 5432, PrivatePort: 5432}},
 		},
+		// Not devc-managed: ignored.
 		{
-			"generic container",
-			dockercontainer.Summary{Names: []string{"/some-container"}},
-			"some-container",
-		},
-		{
-			"no names fallback to ID",
-			dockercontainer.Summary{ID: "abcdef123456789abcdef"},
-			"abcdef123456",
+			Labels:  map[string]string{"com.docker.compose.project": "some-other-stack"},
+			State:   "running",
+			Created: 300,
+			Ports:   []dockercontainer.Port{{PublicPort: 9999, PrivatePort: 9999}},
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := containerDisplayName(tt.c)
-			if got != tt.want {
-				t.Errorf("containerDisplayName() = %q, want %q", got, tt.want)
-			}
-		})
+	rows := buildWorkspaceRows(containers)
+
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 workspace rows, got %d: %+v", len(rows), rows)
+	}
+	// Sorted most-recent first: compose (created 200) before image (100).
+	if rows[0].name != "web" || rows[0].status != "running" || rows[0].path != "/home/user/web" {
+		t.Fatalf("unexpected compose row: %+v", rows[0])
+	}
+	if got := formatPorts(rows[0].ports); got != "8080→80, 5432" {
+		t.Fatalf("compose ports = %q, want %q", got, "8080→80, 5432")
+	}
+	if rows[1].name != "app" || rows[1].status != "running" || rows[1].path != "/home/user/app" {
+		t.Fatalf("unexpected image row: %+v", rows[1])
+	}
+}
+
+func TestBuildWorkspaceRows_ComposeAllStopped(t *testing.T) {
+	containers := []dockercontainer.Summary{
+		{
+			Labels: map[string]string{
+				"com.docker.compose.project":             "web-abc123_devcontainer",
+				"com.docker.compose.project.working_dir": "/home/user/web/.devcontainer",
+			},
+			State:   "exited",
+			Created: 150,
+		},
+		{
+			Labels: map[string]string{
+				"com.docker.compose.project":             "web-abc123_devcontainer",
+				"com.docker.compose.project.working_dir": "/home/user/web/.devcontainer",
+			},
+			State:   "exited",
+			Created: 120,
+		},
+	}
+	rows := buildWorkspaceRows(containers)
+	if len(rows) != 1 || rows[0].status != "exited" {
+		t.Fatalf("expected single exited row, got %+v", rows)
 	}
 }
