@@ -1,6 +1,47 @@
 package docker
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
+
+func TestDotfileLinkCommands(t *testing.T) {
+	got := dotfileLinkCommands("/opt/devc-dotfiles/.claude", "/home/vscode/.claude")
+	want := [][]string{
+		{"mkdir", "-p", "/home/vscode"},
+		{"rm", "-rf", "/home/vscode/.claude"},
+		{"ln", "-sfn", "/opt/devc-dotfiles/.claude", "/home/vscode/.claude"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("dotfileLinkCommands() = %v, want %v", got, want)
+	}
+}
+
+func TestDotfileLinkCommandsRemovesBeforeLinking(t *testing.T) {
+	// A devcontainer feature may pre-create the target as a populated
+	// directory (e.g. claude-code creates ~/.claude). `ln -sfn` cannot
+	// replace a directory, so the target must be removed first, otherwise
+	// the link lands inside the directory and host credentials never apply.
+	cmds := dotfileLinkCommands("/opt/devc-dotfiles/.claude", "/home/vscode/.claude")
+	rmIdx, lnIdx := -1, -1
+	for i, c := range cmds {
+		switch c[0] {
+		case "rm":
+			rmIdx = i
+		case "ln":
+			lnIdx = i
+		}
+	}
+	if rmIdx == -1 {
+		t.Fatal("expected an rm command to clear the existing target")
+	}
+	if lnIdx == -1 {
+		t.Fatal("expected an ln command to create the symlink")
+	}
+	if rmIdx > lnIdx {
+		t.Fatalf("rm (index %d) must run before ln (index %d)", rmIdx, lnIdx)
+	}
+}
 
 func TestRemoteUserFromMetadata(t *testing.T) {
 	tests := []struct {

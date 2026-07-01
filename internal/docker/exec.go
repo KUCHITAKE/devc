@@ -182,6 +182,19 @@ func RemoteUserFromMetadata(metadata string) string {
 	return user
 }
 
+// dotfileLinkCommands returns the commands that replace target with a symlink
+// to staging. The existing target is removed first: a devcontainer feature may
+// pre-create it as a populated directory (e.g. claude-code creates ~/.claude),
+// and `ln -sfn` cannot replace a directory — it would instead create the link
+// inside it, leaving host credentials unused.
+func dotfileLinkCommands(staging, target string) [][]string {
+	return [][]string{
+		{"mkdir", "-p", filepath.Dir(target)},
+		{"rm", "-rf", target},
+		{"ln", "-sfn", staging, target},
+	}
+}
+
 func SetupContainer(containerID, remoteUser string, dotfiles []string) error {
 	ctx := context.Background()
 
@@ -196,8 +209,9 @@ func SetupContainer(containerID, remoteUser string, dotfiles []string) error {
 		rel := config.DotfileRelPath(df)
 		staging := filepath.Join(config.DotfilesDir, rel)
 		target := filepath.Join(remoteHome, rel)
-		_ = Exec(ctx, containerID, remoteUser, []string{"mkdir", "-p", filepath.Dir(target)})
-		_ = Exec(ctx, containerID, remoteUser, []string{"ln", "-sfn", staging, target})
+		for _, cmd := range dotfileLinkCommands(staging, target) {
+			_ = Exec(ctx, containerID, remoteUser, cmd)
+		}
 	}
 
 	// Git config (non-fatal)

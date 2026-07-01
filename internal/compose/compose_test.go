@@ -234,6 +234,26 @@ func TestWriteComposeOverride_ContainerEnv(t *testing.T) {
 	}
 }
 
+func TestComposeDownArgs(t *testing.T) {
+	got := DownArgs()
+	want := []string{"down", "--remove-orphans"}
+	if len(got) != len(want) {
+		t.Fatalf("DownArgs() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("DownArgs() = %v, want %v", got, want)
+		}
+	}
+	// `down` (not `stop`) is required so compose-created networks are removed
+	// and don't leak across workspaces, which exhausts Docker's address pool.
+	for _, a := range got {
+		if a == "stop" {
+			t.Fatalf("DownArgs() must not use `stop`, got %v", got)
+		}
+	}
+}
+
 func TestComposeProject(t *testing.T) {
 	ws := config.Workspace{Dir: "/home/user/projects/myapp", Name: "myapp", ID: "myapp-abc12345"}
 	got := Project(ws)

@@ -138,8 +138,12 @@ tags: [tool, cli, infrastructure, docker, devcontainer]
   コンテナでコマンドを実行しなければならない。コマンド無指定なら `bash -l`、指定ありなら
   `bash -lc "<command>"` を実行する。ワークスペースは位置引数、`--dir`/`-d`、またはコマンドの
   前に置く `--` 区切りのいずれでも指定できなければならない。
-- **REQ-028**: `down` はコンテナを停止（イメージモード）または `docker compose stop`（Compose
-  モード）し、ボリュームを保持しなければならない。
+- **REQ-028**: `down` はイメージモードではコンテナを停止し、Compose モードでは
+  `docker compose down --remove-orphans` を実行しなければならない。いずれの場合もボリュームは
+  保持する。Compose モードで `stop` ではなく `down` を用いるのは、プロジェクトが作成した
+  ネットワークを削除するためである（`stop` はネットワークを残すため、ワークスペースをまたいで
+  ネットワークが蓄積し Docker のデフォルト IPv4 アドレスプールを枯渇させる。また固定サブネットを
+  持つネットワークは同一サブネットを要求する他プロジェクトの起動を阻害する）。
 - **REQ-029**: `clean` はコンテナとそのボリュームを削除しなければならない（イメージモード: 強制
   削除、Compose モード: `docker compose down -v --remove-orphans`）。
 - **REQ-030**: `ls`（別名 `list`, `ps`）は `devcontainer.local_folder` ラベルを持つコンテナを
@@ -212,7 +216,7 @@ tags: [tool, cli, infrastructure, docker, devcontainer]
 |----------|------|--------------|
 | `up` | コンテナを起動して接続 | `[-p host:container]…`, `--rebuild`, `[workspace-dir]` |
 | `rebuild` | `up --rebuild` と等価 | `[-p host:container]…`, `[workspace-dir]` |
-| `down` | コンテナ停止（ボリューム保持） | `[workspace-dir]` |
+| `down` | コンテナ・ネットワーク削除（ボリューム保持） | `[workspace-dir]` |
 | `clean` | コンテナとボリュームを削除 | `[workspace-dir]` |
 | `ls`（`list`, `ps`） | devc コンテナ一覧 | なし |
 | `exec` | コンテナ内でコマンド実行 | `-d/--dir <path>`, `[workspace-dir] [-- command…]` |
@@ -444,7 +448,7 @@ tags: [tool, cli, infrastructure, docker, devcontainer]
 ### 外部システム
 - **EXT-001**：Docker Engine。REST API 経由でコンテナの build/create/start/stop/remove、exec、
   inspect、イメージ操作を行う。
-- **EXT-002**：`docker compose` CLI。Compose モードのサービス管理（`up`, `stop`, `down`）を行う。
+- **EXT-002**：`docker compose` CLI。Compose モードのサービス管理（`up`, `down`）を行う。
 
 ### サードパーティサービス
 - **SVC-001**：OCI レジストリ（例: `ghcr.io`）。feature のトークン発行、マニフェスト取得、blob

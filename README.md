@@ -35,7 +35,7 @@ make install  # builds in Docker, installs to ~/.local/bin/devc
 devc up ~/project                        # start container & attach
 devc up -p 3000:3000 -p 5173 ~/project   # with port forwarding
 devc rebuild ~/project                   # rebuild from scratch
-devc down ~/project                      # stop (volumes preserved)
+devc down ~/project                      # remove containers & networks (volumes preserved)
 devc clean ~/project                     # remove container & volumes
 ```
 
@@ -44,7 +44,7 @@ devc clean ~/project                     # remove container & volumes
 | Command | Description |
 |---------|-------------|
 | `up [flags] [dir]` | Start container and attach (default) |
-| `down [dir]` | Stop container, keep volumes |
+| `down [dir]` | Remove containers & networks, keep volumes |
 | `clean [dir]` | Remove container and volumes |
 | `rebuild [dir]` | Alias for `up --rebuild` |
 

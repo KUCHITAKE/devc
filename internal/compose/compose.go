@@ -202,6 +202,18 @@ func Project(ws config.Workspace) string {
 	return ws.ID + "_devcontainer"
 }
 
+// DownArgs returns the `docker compose` arguments used by `devc down`.
+//
+// It uses `down --remove-orphans` rather than `stop` so that the networks
+// compose created for the project are removed. `stop` leaves containers and
+// networks behind; the networks then accumulate across workspaces and exhaust
+// Docker's default IPv4 address pool (and a pinned-subnet network blocks any
+// other project that requests the same subnet). Named volumes are preserved by
+// `down` — use `devc clean` (`down -v`) to remove those as well.
+func DownArgs() []string {
+	return []string{"down", "--remove-orphans"}
+}
+
 // InstallFeaturesRuntime installs OCI features inside a running container.
 // Unlike the image-based flow (which bakes features into the image at build time),
 // this runs install.sh at runtime via exec — used for compose-based devcontainers.

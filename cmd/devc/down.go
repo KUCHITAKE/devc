@@ -43,9 +43,11 @@ func runDown(dir string) error {
 
 	if len(files) > 0 {
 		project := compose.Project(ws)
-		ui.PrintProgress("Stopping containers", project)
-		if err := compose.Exec(ctx, files, project, "stop"); err != nil {
-			return fmt.Errorf("compose stop failed: %w", err)
+		ui.PrintProgress("Removing containers", project)
+		// `down --remove-orphans`, not `stop`: removes the project's networks so
+		// they don't leak across workspaces. Named volumes are preserved.
+		if err := compose.Exec(ctx, files, project, compose.DownArgs()...); err != nil {
+			return fmt.Errorf("compose down failed: %w", err)
 		}
 	} else {
 		containerID, err := docker.FindContainerByWorkspace(ws)
