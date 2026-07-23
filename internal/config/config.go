@@ -11,6 +11,17 @@ import (
 const DotfilesDir = "/opt/devc-dotfiles"
 const DevcMetaDir = "/opt/devc"
 
+// CredentialsTarget is the fixed path inside the container where host
+// credentials are staged.
+const CredentialsTarget = "/tmp/devc-credentials"
+
+// CredentialsDir returns the host-side staging directory for credentials.
+// It is per-user: a fixed /tmp path created by one user (e.g. a root-run devc)
+// is unwritable for everyone else, and /tmp's sticky bit prevents cleanup.
+func CredentialsDir() string {
+	return fmt.Sprintf("/tmp/devc-credentials-%d", os.Getuid())
+}
+
 type HostMount struct {
 	Source string
 	Target string
@@ -75,8 +86,8 @@ func BuildHostMounts(ucfg *UserConfig, wsName string, daemonSockDir string) []Ho
 
 	// Built-in credentials mount (always present)
 	mounts = append(mounts, HostMount{
-		Source: "/tmp/devc-credentials",
-		Target: "/tmp/devc-credentials",
+		Source: CredentialsDir(),
+		Target: CredentialsTarget,
 	})
 
 	// Daemon socket directory mount
