@@ -188,8 +188,10 @@ tags: [tool, cli, infrastructure, docker, devcontainer]
 - **SEC-002**: デーモンの `host` リクエスト型はホスト上で任意コマンドを実行する。これは意図的な
   機能であり、信頼レベルは Docker ソケットのマウントと同等である。ドキュメントは `devc` コンテナ内で
   信頼できないコードを実行するとホストアクセスを許すことを警告しなければならない。
-- **SEC-003**: 転送されたホスト認証情報は `/tmp/devc-credentials` 配下にステージングしてコンテナへ
-  マウントすること。イメージに焼き込んではならない。
+- **SEC-003**: 転送されたホスト認証情報はホスト側のユーザー別ディレクトリ
+  `/tmp/devc-credentials-{uid}` にステージングし、コンテナ内 `/tmp/devc-credentials` へ
+  マウントすること。イメージに焼き込んではならない。ステージングへの書き込み失敗はエラーとして
+  報告しなければならない（黙殺してはならない）。
 - **SEC-004**: 自動ポートフォワーディングは、特権ポートや高位エフェメラルポートの意図しない転送を
   避けるため、1024〜32768（両端含む）のコンテナ待受ポートのみを対象としなければならない。
 
@@ -352,7 +354,7 @@ tags: [tool, cli, infrastructure, docker, devcontainer]
 | メタデータファイル（コンテナ） | `/opt/devc/meta.json` |
 | コンテナ内バイナリ | `/opt/devc/bin/devc`（`/usr/local/bin/devc` にシンボリックリンク） |
 | dotfiles ステージング | `/opt/devc-dotfiles` |
-| 認証情報ステージング | `/tmp/devc-credentials` |
+| 認証情報ステージング | ホスト `/tmp/devc-credentials-{uid}` → コンテナ `/tmp/devc-credentials` |
 | ワークスペースラベル | `devcontainer.local_folder=<絶対ディレクトリ>` |
 | イメージタグ形式 | `devc-{ワークスペースID}:{12桁16進}` |
 | コンテナ名（イメージモード） | `devc-{ワークスペースID}` |

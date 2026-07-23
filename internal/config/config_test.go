@@ -166,9 +166,12 @@ func TestBuildHostMounts(t *testing.T) {
 		t.Errorf("mount[2].Target = %q", mounts[2].Target)
 	}
 
-	// Credentials
-	if mounts[3].Source != "/tmp/devc-credentials" {
-		t.Errorf("mount[3].Source = %q", mounts[3].Source)
+	// Credentials: per-user host dir staged at the fixed container path
+	if mounts[3].Source != CredentialsDir() {
+		t.Errorf("mount[3].Source = %q, want %q", mounts[3].Source, CredentialsDir())
+	}
+	if mounts[3].Target != CredentialsTarget {
+		t.Errorf("mount[3].Target = %q, want %q", mounts[3].Target, CredentialsTarget)
 	}
 
 	// Daemon socket directory
@@ -186,10 +189,20 @@ func TestBuildHostMounts_EmptyConfig(t *testing.T) {
 	if len(mounts) != 2 {
 		t.Fatalf("expected 2 mounts, got %d: %+v", len(mounts), mounts)
 	}
-	if mounts[0].Source != "/tmp/devc-credentials" {
+	if mounts[0].Source != CredentialsDir() {
 		t.Errorf("expected credentials mount, got %q", mounts[0].Source)
 	}
 	if mounts[1].Target != DevcMetaDir {
 		t.Errorf("expected daemon socket mount, got target %q", mounts[1].Target)
+	}
+}
+
+func TestCredentialsDirIsPerUser(t *testing.T) {
+	// The host staging dir must be per-user: a fixed /tmp path created by one
+	// user (e.g. a root-run devc) blocks writes for everyone else, and /tmp's
+	// sticky bit prevents cleanup.
+	want := fmt.Sprintf("/tmp/devc-credentials-%d", os.Getuid())
+	if got := CredentialsDir(); got != want {
+		t.Errorf("CredentialsDir() = %q, want %q", got, want)
 	}
 }

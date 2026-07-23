@@ -16,27 +16,45 @@ import (
 	"github.com/docker/docker/api/types/filters"
 )
 
+// credentialSource is one host credential to stage: the file name it is
+// written under and how to read its value.
+type credentialSource struct {
+	name string
+	read func() ([]byte, error)
+}
+
+func hostCredentialSources() []credentialSource {
+	return []credentialSource{
+		{"git-user-name", exec.Command("git", "config", "--global", "user.name").Output},
+		{"git-user-email", exec.Command("git", "config", "--global", "user.email").Output},
+		{"gh-token", exec.Command("gh", "auth", "token").Output},
+	}
+}
+
+// ExtractCredentials stages host git/gh credentials into CredentialsDir so
+// they can be bind-mounted into the container.
 func ExtractCredentials() error {
-	dir := "/tmp/devc-credentials"
+	return extractCredentials(config.CredentialsDir(), hostCredentialSources())
+}
+
+func extractCredentials(dir string, sources []credentialSource) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return fmt.Errorf("credentials dir: %w", err)
 	}
-	for _, name := range []string{"git-user-name", "git-user-email", "gh-token"} {
-		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
-			return err
+	for _, s := range sources {
+		path := filepath.Join(dir, s.name)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove stale credential: %w", err)
 		}
-	}
-	// git user.name
-	if out, err := exec.Command("git", "config", "--global", "user.name").Output(); err == nil {
-		_ = os.WriteFile(filepath.Join(dir, "git-user-name"), bytes.TrimSpace(out), 0o644)
-	}
-	// git user.email
-	if out, err := exec.Command("git", "config", "--global", "user.email").Output(); err == nil {
-		_ = os.WriteFile(filepath.Join(dir, "git-user-email"), bytes.TrimSpace(out), 0o644)
-	}
-	// gh auth token
-	if out, err := exec.Command("gh", "auth", "token").Output(); err == nil {
-		_ = os.WriteFile(filepath.Join(dir, "gh-token"), bytes.TrimSpace(out), 0o644)
+		// An unavailable source (e.g. gh not installed or not logged in) is
+		// not an error — the file stays absent and container setup skips it.
+		out, err := s.read()
+		if err != nil {
+			continue
+		}
+		if err := os.WriteFile(path, bytes.TrimSpace(out), 0o644); err != nil {
+			return fmt.Errorf("stage credential: %w", err)
+		}
 	}
 	return nil
 }
@@ -258,17 +276,19 @@ func SetupContainer(containerID, remoteUser string, dotfiles []string) error {
 		}
 	}
 
-	// Git config (non-fatal)
-	if data, err := os.ReadFile("/tmp/devc-credentials/git-user-name"); err == nil {
+	// Git config (non-fatal). Values are read from the host staging dir;
+	// commands run inside the container against the mounted CredentialsTarget.
+	credDir := config.CredentialsDir()
+	if data, err := os.ReadFile(filepath.Join(credDir, "git-user-name")); err == nil {
 		_ = Exec(ctx, containerID, remoteUser, []string{"git", "config", "--global", "user.name", strings.TrimSpace(string(data))})
 	}
-	if data, err := os.ReadFile("/tmp/devc-credentials/git-user-email"); err == nil {
+	if data, err := os.ReadFile(filepath.Join(credDir, "git-user-email")); err == nil {
 		_ = Exec(ctx, containerID, remoteUser, []string{"git", "config", "--global", "user.email", strings.TrimSpace(string(data))})
 	}
 	// gh auth (non-fatal)
-	if _, err := os.Stat("/tmp/devc-credentials/gh-token"); err == nil {
+	if _, err := os.Stat(filepath.Join(credDir, "gh-token")); err == nil {
 		if _, err := ExecOutput(ctx, containerID, remoteUser, []string{"sh", "-c", "command -v gh"}); err == nil {
-			_ = Exec(ctx, containerID, remoteUser, []string{"sh", "-c", "gh auth login --with-token < /tmp/devc-credentials/gh-token && gh auth setup-git"})
+			_ = Exec(ctx, containerID, remoteUser, []string{"sh", "-c", "gh auth login --with-token < " + config.CredentialsTarget + "/gh-token && gh auth setup-git"})
 		}
 	}
 
